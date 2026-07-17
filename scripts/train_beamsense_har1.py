@@ -21,7 +21,10 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("npz", type=Path)
     parser.add_argument("output", type=Path)
-    parser.add_argument("--test-participant", type=int, choices=(1, 2, 3), required=True)
+    parser.add_argument(
+        "--split", choices=("participant", "random-window"), default="participant"
+    )
+    parser.add_argument("--test-participant", type=int, choices=(1, 2, 3))
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--validation-fraction", type=float, default=0.1)
@@ -84,6 +87,16 @@ def split_indexes(source, participant, test_participant, validation_fraction):
     )
 
 
+def random_window_split(size, rng):
+    """Reproduce BeamSense create_csv_CNN.py's 70/15/15 window split."""
+    values = rng.random(size)
+    return (
+        np.flatnonzero(values < 0.70),
+        np.flatnonzero((values >= 0.70) & (values < 0.85)),
+        np.flatnonzero(values >= 0.85),
+    )
+
+
 def balanced_limit(indexes, labels, limit, rng):
     if limit is None or len(indexes) <= limit:
         return indexes
@@ -109,6 +122,8 @@ def class_weights(labels):
 
 def main():
     args = parse_args()
+    if args.split == "participant" and args.test_participant is None:
+        raise SystemExit("--test-participant is required for --split participant")
     if not 0 < args.validation_fraction < 0.5:
         raise SystemExit("--validation-fraction must be between 0 and 0.5")
 
@@ -125,10 +140,15 @@ def main():
     if x.shape[1:] != (10, 234, 4):
         raise SystemExit(f"Expected x shape [N,10,234,4], got {x.shape}")
 
-    train_idx, val_idx, test_idx = split_indexes(
-        source, participant, args.test_participant, args.validation_fraction
-    )
     rng = np.random.default_rng(args.seed)
+    if args.split == "random-window":
+        train_idx, val_idx, test_idx = random_window_split(len(y), rng)
+        fold_name = "random_window"
+    else:
+        train_idx, val_idx, test_idx = split_indexes(
+            source, participant, args.test_participant, args.validation_fraction
+        )
+        fold_name = f"p{args.test_participant}"
     train_idx = balanced_limit(train_idx, y, args.max_train_samples, rng)
 
     class NpzSequence(tf.keras.utils.Sequence):
@@ -161,7 +181,7 @@ def main():
         loss="sparse_categorical_crossentropy",
         metrics=["accuracy"],
     )
-    checkpoint = args.output / f"p{args.test_participant}_best.keras"
+    checkpoint = args.output / f"{fold_name}_best.keras"
     callbacks = [
         tf.keras.callbacks.ModelCheckpoint(checkpoint, save_best_only=True),
         tf.keras.callbacks.ReduceLROnPlateau(
@@ -170,10 +190,10 @@ def main():
         tf.keras.callbacks.EarlyStopping(
             monitor="val_loss", min_delta=0.05, patience=10, restore_best_weights=True
         ),
-        tf.keras.callbacks.CSVLogger(args.output / f"p{args.test_participant}_history.csv"),
+        tf.keras.callbacks.CSVLogger(args.output / f"{fold_name}_history.csv"),
     ]
     print(
-        f"fold=P{args.test_participant} train={len(train_idx)} "
+        f"split={args.split} fold={fold_name} train={len(train_idx)} "
         f"validation={len(val_idx)} test={len(test_idx)} normalize={args.normalize}"
     )
     model.fit(
@@ -189,6 +209,7 @@ def main():
     prediction = np.argmax(probabilities, axis=1)
     truth = y[test_idx]
     metrics = {
+        "split": args.split,
         "test_participant": args.test_participant,
         "train_samples": len(train_idx),
         "validation_samples": len(val_idx),
@@ -199,13 +220,13 @@ def main():
         "normalization": args.normalize,
         "seed": args.seed,
     }
-    (args.output / f"p{args.test_participant}_metrics.json").write_text(
+    (args.output / f"{fold_name}_metrics.json").write_text(
         json.dumps(metrics, indent=2), encoding="utf-8"
     )
     matrix = confusion_matrix(truth, prediction, labels=np.arange(20), normalize="true")
-    np.savetxt(args.output / f"p{args.test_participant}_confusion.csv", matrix, delimiter=",")
+    np.savetxt(args.output / f"{fold_name}_confusion.csv", matrix, delimiter=",")
     np.savez_compressed(
-        args.output / f"p{args.test_participant}_predictions.npz",
+        args.output / f"{fold_name}_predictions.npz",
         truth=truth,
         prediction=prediction,
         probabilities=probabilities,
