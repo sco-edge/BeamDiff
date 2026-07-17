@@ -30,6 +30,7 @@ def parse_args():
     parser.add_argument("--validation-fraction", type=float, default=0.1)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--class-weight", choices=("none", "balanced"), default="balanced")
     parser.add_argument(
         "--normalize",
         choices=("none", "angle-range"),
@@ -196,12 +197,13 @@ def main():
         f"split={args.split} fold={fold_name} train={len(train_idx)} "
         f"validation={len(val_idx)} test={len(test_idx)} normalize={args.normalize}"
     )
+    fit_class_weight = class_weights(y[train_idx]) if args.class_weight == "balanced" else None
     model.fit(
         train_seq,
         validation_data=val_seq,
         epochs=args.epochs,
         callbacks=callbacks,
-        class_weight=class_weights(y[train_idx]),
+        class_weight=fit_class_weight,
         verbose=1,
     )
 
@@ -218,6 +220,7 @@ def main():
         "macro_f1": float(f1_score(truth, prediction, average="macro", zero_division=0)),
         "macro_recall": float(recall_score(truth, prediction, average="macro", zero_division=0)),
         "normalization": args.normalize,
+        "class_weight": args.class_weight,
         "seed": args.seed,
     }
     (args.output / f"{fold_name}_metrics.json").write_text(
