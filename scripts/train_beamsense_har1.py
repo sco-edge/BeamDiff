@@ -38,6 +38,8 @@ def parse_args():
         help="Use none for the closest match to the public BeamSense generator.",
     )
     parser.add_argument("--max-train-samples", type=int, default=None)
+    parser.add_argument("--augment-npz", type=Path)
+    parser.add_argument("--augment-ratio", type=float, default=1.0)
     return parser.parse_args()
 
 
@@ -121,12 +123,29 @@ def class_weights(labels):
     return {index: float(weight) for index, weight in enumerate(weights)}
 
 
+def canonical_source(value):
+    name = Path(str(value)).name
+    for suffix in (".pcapng", ".pcap", ".mat", ".npy"):
+        if name.endswith(suffix):
+            name = name[: -len(suffix)]
+    return name
+
+
+def sample_keys(data, labels):
+    return [
+        (canonical_source(source), int(start), int(label))
+        for source, start, label in zip(data["source"], data["window_start"], labels)
+    ]
+
+
 def main():
     args = parse_args()
     if args.split == "participant" and args.test_participant is None:
         raise SystemExit("--test-participant is required for --split participant")
     if not 0 < args.validation_fraction < 0.5:
         raise SystemExit("--validation-fraction must be between 0 and 0.5")
+    if not 0 <= args.augment_ratio <= 1:
+        raise SystemExit("--augment-ratio must be between 0 and 1")
 
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -152,10 +171,41 @@ def main():
         fold_name = f"p{args.test_participant}"
     train_idx = balanced_limit(train_idx, y, args.max_train_samples, rng)
 
+    augment_x = augment_y = None
+    augment_idx = np.empty(0, dtype=np.int64)
+    if args.augment_npz is not None:
+        augmented = np.load(args.augment_npz, allow_pickle=False)
+        augment_x = augmented["x"]
+        augment_y = augmented["y"].astype(np.int64)
+        if augment_x.shape[1:] != (10, 234, 4):
+            raise SystemExit(
+                f"Expected augmented x shape [N,10,234,4], got {augment_x.shape}"
+            )
+        generated_by_key = {
+            key: index for index, key in enumerate(sample_keys(augmented, augment_y))
+        }
+        real_keys = sample_keys(data, y)
+        matched = [generated_by_key.get(real_keys[index]) for index in train_idx]
+        if any(index is None for index in matched):
+            missing = sum(index is None for index in matched)
+            raise SystemExit(f"Generated data is missing {missing} real training samples")
+        augment_idx = np.asarray(matched, dtype=np.int64)
+        if args.augment_ratio < 1:
+            count = int(np.floor(len(augment_idx) * args.augment_ratio))
+            augment_idx = rng.choice(augment_idx, count, replace=False)
+
     class NpzSequence(tf.keras.utils.Sequence):
-        def __init__(self, indexes, shuffle):
+        def __init__(self, indexes, shuffle, generated_indexes=None):
             super().__init__()
-            self.indexes = np.asarray(indexes).copy()
+            indexes = np.asarray(indexes, dtype=np.int64)
+            generated_indexes = np.asarray(
+                [] if generated_indexes is None else generated_indexes, dtype=np.int64
+            )
+            self.real_count = len(indexes)
+            self.indexes = np.concatenate([indexes, generated_indexes])
+            self.generated = np.concatenate(
+                [np.zeros(len(indexes), dtype=bool), np.ones(len(generated_indexes), dtype=bool)]
+            )
             self.shuffle = shuffle
             self.on_epoch_end()
 
@@ -163,17 +213,28 @@ def main():
             return int(np.ceil(len(self.indexes) / args.batch_size))
 
         def __getitem__(self, batch):
-            indexes = self.indexes[batch * args.batch_size : (batch + 1) * args.batch_size]
-            features = x[indexes].astype(np.float32)
+            selection = slice(batch * args.batch_size, (batch + 1) * args.batch_size)
+            indexes = self.indexes[selection]
+            generated = self.generated[selection]
+            features = np.empty((len(indexes), 10, 234, 4), dtype=np.float32)
+            labels = np.empty(len(indexes), dtype=np.int64)
+            if np.any(~generated):
+                features[~generated] = x[indexes[~generated]].astype(np.float32)
+                labels[~generated] = y[indexes[~generated]]
+            if np.any(generated):
+                features[generated] = augment_x[indexes[generated]].astype(np.float32)
+                labels[generated] = augment_y[indexes[generated]]
             if args.normalize == "angle-range":
                 features /= ANGLE_SCALE
-            return features, y[indexes]
+            return features, labels
 
         def on_epoch_end(self):
             if self.shuffle:
-                rng.shuffle(self.indexes)
+                order = rng.permutation(len(self.indexes))
+                self.indexes = self.indexes[order]
+                self.generated = self.generated[order]
 
-    train_seq = NpzSequence(train_idx, True)
+    train_seq = NpzSequence(train_idx, True, augment_idx)
     val_seq = NpzSequence(val_idx, False)
     test_seq = NpzSequence(test_idx, False)
     model = build_model()
@@ -194,10 +255,14 @@ def main():
         tf.keras.callbacks.CSVLogger(args.output / f"{fold_name}_history.csv"),
     ]
     print(
-        f"split={args.split} fold={fold_name} train={len(train_idx)} "
+        f"split={args.split} fold={fold_name} real_train={len(train_idx)} "
+        f"synthetic_train={len(augment_idx)} train={len(train_idx) + len(augment_idx)} "
         f"validation={len(val_idx)} test={len(test_idx)} normalize={args.normalize}"
     )
-    fit_class_weight = class_weights(y[train_idx]) if args.class_weight == "balanced" else None
+    fit_labels = np.concatenate(
+        [y[train_idx], augment_y[augment_idx] if augment_y is not None else np.empty(0, int)]
+    )
+    fit_class_weight = class_weights(fit_labels) if args.class_weight == "balanced" else None
     model.fit(
         train_seq,
         validation_data=val_seq,
@@ -213,7 +278,12 @@ def main():
     metrics = {
         "split": args.split,
         "test_participant": args.test_participant,
-        "train_samples": len(train_idx),
+        "real_data": str(args.npz),
+        "augmentation_data": str(args.augment_npz) if args.augment_npz else None,
+        "augmentation_ratio": args.augment_ratio if args.augment_npz else 0.0,
+        "real_train_samples": len(train_idx),
+        "synthetic_train_samples": len(augment_idx),
+        "train_samples": len(train_idx) + len(augment_idx),
         "validation_samples": len(val_idx),
         "test_samples": len(test_idx),
         "accuracy": float(accuracy_score(truth, prediction)),
