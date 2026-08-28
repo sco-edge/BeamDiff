@@ -45,6 +45,11 @@ def parse_args():
     parser.add_argument("--max-train-samples", type=int, default=None)
     parser.add_argument("--augment-npz", type=Path)
     parser.add_argument("--augment-ratio", type=float, default=1.0)
+    parser.add_argument(
+        "--augment-seed",
+        type=int,
+        help="synthetic subset seed; defaults to --seed for backward compatibility",
+    )
     return parser.parse_args()
 
 
@@ -166,8 +171,10 @@ def main():
         raise SystemExit(f"Expected x shape [N,10,234,4], got {x.shape}")
 
     split_seed = args.seed if args.split_seed is None else args.split_seed
+    augment_seed = args.seed if args.augment_seed is None else args.augment_seed
     split_rng = np.random.default_rng(split_seed)
     rng = np.random.default_rng(args.seed)
+    augment_rng = np.random.default_rng(augment_seed)
     if args.split == "random-window":
         train_idx, val_idx, test_idx = random_window_split(len(y), split_rng)
         fold_name = "random_window"
@@ -199,7 +206,7 @@ def main():
         augment_idx = np.asarray(matched, dtype=np.int64)
         if args.augment_ratio < 1:
             count = int(np.floor(len(augment_idx) * args.augment_ratio))
-            augment_idx = rng.choice(augment_idx, count, replace=False)
+            augment_idx = augment_rng.choice(augment_idx, count, replace=False)
 
     class NpzSequence(tf.keras.utils.Sequence):
         def __init__(self, indexes, shuffle, generated_indexes=None):
@@ -265,7 +272,7 @@ def main():
         f"split={args.split} fold={fold_name} real_train={len(train_idx)} "
         f"synthetic_train={len(augment_idx)} train={len(train_idx) + len(augment_idx)} "
         f"validation={len(val_idx)} test={len(test_idx)} normalize={args.normalize} "
-        f"model_seed={args.seed} split_seed={split_seed}"
+        f"model_seed={args.seed} split_seed={split_seed} augment_seed={augment_seed}"
     )
     fit_labels = np.concatenate(
         [y[train_idx], augment_y[augment_idx] if augment_y is not None else np.empty(0, int)]
@@ -301,6 +308,7 @@ def main():
         "class_weight": args.class_weight,
         "seed": args.seed,
         "split_seed": split_seed,
+        "augmentation_seed": augment_seed if args.augment_npz else None,
     }
     (args.output / f"{fold_name}_metrics.json").write_text(
         json.dumps(metrics, indent=2), encoding="utf-8"
