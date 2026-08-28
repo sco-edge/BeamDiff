@@ -30,6 +30,11 @@ def parse_args():
     parser.add_argument("--validation-fraction", type=float, default=0.1)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--split-seed",
+        type=int,
+        help="data split seed; defaults to --seed for backward compatibility",
+    )
     parser.add_argument("--class-weight", choices=("none", "balanced"), default="balanced")
     parser.add_argument(
         "--normalize",
@@ -160,9 +165,11 @@ def main():
     if x.shape[1:] != (10, 234, 4):
         raise SystemExit(f"Expected x shape [N,10,234,4], got {x.shape}")
 
+    split_seed = args.seed if args.split_seed is None else args.split_seed
+    split_rng = np.random.default_rng(split_seed)
     rng = np.random.default_rng(args.seed)
     if args.split == "random-window":
-        train_idx, val_idx, test_idx = random_window_split(len(y), rng)
+        train_idx, val_idx, test_idx = random_window_split(len(y), split_rng)
         fold_name = "random_window"
     else:
         train_idx, val_idx, test_idx = split_indexes(
@@ -257,7 +264,8 @@ def main():
     print(
         f"split={args.split} fold={fold_name} real_train={len(train_idx)} "
         f"synthetic_train={len(augment_idx)} train={len(train_idx) + len(augment_idx)} "
-        f"validation={len(val_idx)} test={len(test_idx)} normalize={args.normalize}"
+        f"validation={len(val_idx)} test={len(test_idx)} normalize={args.normalize} "
+        f"model_seed={args.seed} split_seed={split_seed}"
     )
     fit_labels = np.concatenate(
         [y[train_idx], augment_y[augment_idx] if augment_y is not None else np.empty(0, int)]
@@ -292,6 +300,7 @@ def main():
         "normalization": args.normalize,
         "class_weight": args.class_weight,
         "seed": args.seed,
+        "split_seed": split_seed,
     }
     (args.output / f"{fold_name}_metrics.json").write_text(
         json.dumps(metrics, indent=2), encoding="utf-8"
