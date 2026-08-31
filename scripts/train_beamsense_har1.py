@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import random
@@ -110,6 +111,15 @@ def random_window_split(size, rng):
     )
 
 
+def nested_augmentation_subset(indexes, ratio, seed):
+    """A fixed seeded permutation prefix, so smaller ratios nest in larger."""
+    indexes = np.asarray(indexes, dtype=np.int64)
+    if not 0 <= ratio <= 1:
+        raise ValueError("ratio must be in [0,1]")
+    order = np.random.default_rng(seed).permutation(len(indexes))
+    return indexes[order[: int(np.floor(len(indexes) * ratio))]]
+
+
 def balanced_limit(indexes, labels, limit, rng):
     if limit is None or len(indexes) <= limit:
         return indexes
@@ -174,7 +184,6 @@ def main():
     augment_seed = args.seed if args.augment_seed is None else args.augment_seed
     split_rng = np.random.default_rng(split_seed)
     rng = np.random.default_rng(args.seed)
-    augment_rng = np.random.default_rng(augment_seed)
     if args.split == "random-window":
         train_idx, val_idx, test_idx = random_window_split(len(y), split_rng)
         fold_name = "random_window"
@@ -211,9 +220,9 @@ def main():
         if "augmentation_eligible" in augmented.files:
             if not np.all(augmented["augmentation_eligible"][augment_idx]):
                 raise SystemExit("Direct BFA augmentation contains ineligible training matches")
-        if args.augment_ratio < 1:
-            count = int(np.floor(len(augment_idx) * args.augment_ratio))
-            augment_idx = augment_rng.choice(augment_idx, count, replace=False)
+        augment_idx = nested_augmentation_subset(
+            augment_idx, args.augment_ratio, augment_seed
+        )
 
     class NpzSequence(tf.keras.utils.Sequence):
         def __init__(self, indexes, shuffle, generated_indexes=None):
@@ -316,6 +325,13 @@ def main():
         "seed": args.seed,
         "split_seed": split_seed,
         "augmentation_seed": augment_seed if args.augment_npz else None,
+        "augmentation_selection": (
+            "seeded-permutation-prefix-v1" if args.augment_npz else None
+        ),
+        "augmentation_indices_sha256": (
+            hashlib.sha256(augment_idx.astype("<i8").tobytes()).hexdigest()
+            if args.augment_npz else None
+        ),
     }
     (args.output / f"{fold_name}_metrics.json").write_text(
         json.dumps(metrics, indent=2), encoding="utf-8"
