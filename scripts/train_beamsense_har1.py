@@ -195,6 +195,10 @@ def main():
             raise SystemExit(
                 f"Expected augmented x shape [N,10,234,4], got {augment_x.shape}"
             )
+        if "augmentation_eligible" in augmented.files:
+            if (args.split != "random-window"
+                    or int(augmented["train_split_seed"]) != split_seed):
+                raise SystemExit("Direct BFA augmentation requires its original random-window split seed")
         generated_by_key = {
             key: index for index, key in enumerate(sample_keys(augmented, augment_y))
         }
@@ -204,6 +208,9 @@ def main():
             missing = sum(index is None for index in matched)
             raise SystemExit(f"Generated data is missing {missing} real training samples")
         augment_idx = np.asarray(matched, dtype=np.int64)
+        if "augmentation_eligible" in augmented.files:
+            if not np.all(augmented["augmentation_eligible"][augment_idx]):
+                raise SystemExit("Direct BFA augmentation contains ineligible training matches")
         if args.augment_ratio < 1:
             count = int(np.floor(len(augment_idx) * args.augment_ratio))
             augment_idx = augment_rng.choice(augment_idx, count, replace=False)
