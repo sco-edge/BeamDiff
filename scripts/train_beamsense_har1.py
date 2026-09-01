@@ -47,6 +47,11 @@ def parse_args():
     parser.add_argument("--augment-npz", type=Path)
     parser.add_argument("--augment-ratio", type=float, default=1.0)
     parser.add_argument(
+        "--allow-partial-augmentation",
+        action="store_true",
+        help="Allow an augmentation file containing only a subset of real train keys.",
+    )
+    parser.add_argument(
         "--augment-seed",
         type=int,
         help="synthetic subset seed; defaults to --seed for backward compatibility",
@@ -213,10 +218,12 @@ def main():
         }
         real_keys = sample_keys(data, y)
         matched = [generated_by_key.get(real_keys[index]) for index in train_idx]
-        if any(index is None for index in matched):
-            missing = sum(index is None for index in matched)
+        missing = sum(index is None for index in matched)
+        if missing and not args.allow_partial_augmentation:
             raise SystemExit(f"Generated data is missing {missing} real training samples")
-        augment_idx = np.asarray(matched, dtype=np.int64)
+        augment_idx = np.asarray([index for index in matched if index is not None], dtype=np.int64)
+        if not len(augment_idx):
+            raise SystemExit("Generated data has no keys matching the real training fold")
         if "augmentation_eligible" in augmented.files:
             if not np.all(augmented["augmentation_eligible"][augment_idx]):
                 raise SystemExit("Direct BFA augmentation contains ineligible training matches")
@@ -327,6 +334,12 @@ def main():
         "augmentation_seed": augment_seed if args.augment_npz else None,
         "augmentation_selection": (
             "seeded-permutation-prefix-v1" if args.augment_npz else None
+        ),
+        "partial_augmentation_allowed": (
+            args.allow_partial_augmentation if args.augment_npz else None
+        ),
+        "eligible_synthetic_samples": (
+            len(matched) - missing if args.augment_npz else 0
         ),
         "augmentation_indices_sha256": (
             hashlib.sha256(augment_idx.astype("<i8").tobytes()).hexdigest()
