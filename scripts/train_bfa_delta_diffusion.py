@@ -72,7 +72,12 @@ def main():
     p.add_argument('--batch-size',type=int,default=64);p.add_argument('--learning-rate',type=float,default=2e-4)
     p.add_argument('--max-samples',type=int)
     p.add_argument('--generated-per-class',type=int,help='generate this many samples for every activity; scarce anchors are reused with new diffusion noise')
+    p.add_argument('--candidates-per-anchor',type=int,default=1,
+        help='generate K independent diffusion candidates for every training anchor')
     p.add_argument('--resume',action='store_true');args=p.parse_args()
+    if args.candidates_per_anchor < 1:p.error('--candidates-per-anchor must be >= 1')
+    if args.generated_per_class and args.candidates_per_anchor != 1:
+        p.error('--generated-per-class and --candidates-per-anchor cannot be combined')
     ck=args.output_dir/'checkpoint_latest.pt'
     if args.output_dir.exists() and not args.resume:p.error('output exists; use --resume or another output')
     if args.resume and not ck.is_file():p.error(f'missing {ck}')
@@ -116,9 +121,10 @@ def main():
             generation.extend(generation_rng.choice(candidates,args.generated_per_class,
                 replace=len(candidates)<args.generated_per_class))
         generation=np.asarray(generation,dtype=np.int64)
-    else:generation=train.copy()
+    else:generation=np.repeat(train,args.candidates_per_anchor)
     generation_labels=y[generation];generation_anchors=anchor_features(x[generation,:1])
-    generation_suffix=(f'_per_class_{args.generated_per_class}' if args.generated_per_class else '')
+    generation_suffix=(f'_per_class_{args.generated_per_class}' if args.generated_per_class
+        else f'_candidates_{args.candidates_per_anchor}' if args.candidates_per_anchor>1 else '')
     chunks=args.output_dir/f'generation_chunks{generation_suffix}';chunks.mkdir(exist_ok=True);made=[]
     for begin in range(0,len(generation),args.batch_size):
         end=min(begin+args.batch_size,len(generation));path=chunks/f'{begin:08d}_{end:08d}.npy'
@@ -133,10 +139,12 @@ def main():
     protocol_path=args.output_dir/f'protocol{generation_suffix}.json'
     made=np.concatenate(made);np.savez_compressed(generated_path,x=made,y=generation_labels,
         **{k:v[generation] for k,v in meta.items()},allocation_real_index=generation,augmentation_eligible=np.ones(len(generation),bool),
+        candidate_rank=np.tile(np.arange(args.candidates_per_anchor,dtype=np.int16),len(train)) if not args.generated_per_class else np.zeros(len(generation),np.int16),
         train_split_seed=np.asarray(args.split_seed),augmentation=np.asarray('anchor-conditioned-bfa-delta-ddpm-v1'))
     protocol_path.write_text(json.dumps(dict(input=str(args.input),device=str(device),seed=args.seed,
         split_seed=args.split_seed,steps=args.steps,epochs=args.epochs,train_samples=len(train),generated_samples=len(generation),
-        generated_per_class=args.generated_per_class,generated_class_counts=np.bincount(generation_labels,minlength=20).tolist(),
+        generated_per_class=args.generated_per_class,candidates_per_anchor=args.candidates_per_anchor,
+        generated_class_counts=np.bincount(generation_labels,minlength=20).tolist(),
         unique_generation_anchors=len(np.unique(generation)),delta_mean=mean.tolist(),
         delta_std=std.tolist(),loss=history),indent=2));print('Saved',made.shape,flush=True)
 
