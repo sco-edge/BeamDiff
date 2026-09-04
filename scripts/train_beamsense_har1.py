@@ -320,14 +320,14 @@ def main():
     )
     checkpoint = args.output / f"{fold_name}_best.keras"
     callbacks = [
-        tf.keras.callbacks.ModelCheckpoint(checkpoint, save_best_only=True),
+        tf.keras.callbacks.ModelCheckpoint(str(checkpoint), save_best_only=True),
         tf.keras.callbacks.ReduceLROnPlateau(
             monitor="val_loss", patience=6, factor=0.5, min_lr=1e-5, verbose=1
         ),
         tf.keras.callbacks.EarlyStopping(
             monitor="val_loss", min_delta=0.05, patience=10, restore_best_weights=True
         ),
-        tf.keras.callbacks.CSVLogger(args.output / f"{fold_name}_history.csv"),
+        tf.keras.callbacks.CSVLogger(str(args.output / f"{fold_name}_history.csv")),
     ]
     print(
         f"split={args.split} fold={fold_name} real_train={len(train_idx)} "
