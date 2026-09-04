@@ -36,6 +36,14 @@ def parse_args():
         type=int,
         help="data split seed; defaults to --seed for backward compatibility",
     )
+    parser.add_argument(
+        "--split-indices-dir",
+        type=Path,
+        help=(
+            "directory containing train_indices.npy, validation_indices.npy, and "
+            "test_indices.npy; overrides generated random-window indices"
+        ),
+    )
     parser.add_argument("--class-weight", choices=("none", "balanced"), default="balanced")
     parser.add_argument(
         "--normalize",
@@ -116,6 +124,31 @@ def random_window_split(size, rng):
     )
 
 
+def load_fixed_split(directory, size):
+    names = ("train", "validation", "test")
+    indexes = []
+    for name in names:
+        path = directory / f"{name}_indices.npy"
+        if not path.is_file():
+            raise SystemExit(f"Missing fixed split file: {path}")
+        values = np.asarray(np.load(path, allow_pickle=False), dtype=np.int64).reshape(-1)
+        if len(values) == 0:
+            raise SystemExit(f"Fixed split is empty: {path}")
+        if values.min() < 0 or values.max() >= size:
+            raise SystemExit(f"Fixed split contains out-of-range indices: {path}")
+        if len(np.unique(values)) != len(values):
+            raise SystemExit(f"Fixed split contains duplicate indices: {path}")
+        indexes.append(values)
+    combined = np.concatenate(indexes)
+    if len(np.unique(combined)) != len(combined):
+        raise SystemExit("Fixed train/validation/test splits overlap")
+    if len(combined) != size:
+        raise SystemExit(
+            f"Fixed splits cover {len(combined)} of {size} samples; expected full coverage"
+        )
+    return tuple(indexes)
+
+
 def nested_augmentation_subset(indexes, ratio, seed):
     """A fixed seeded permutation prefix, so smaller ratios nest in larger."""
     indexes = np.asarray(indexes, dtype=np.int64)
@@ -189,7 +222,12 @@ def main():
     augment_seed = args.seed if args.augment_seed is None else args.augment_seed
     split_rng = np.random.default_rng(split_seed)
     rng = np.random.default_rng(args.seed)
-    if args.split == "random-window":
+    if args.split_indices_dir is not None:
+        if args.split != "random-window":
+            raise SystemExit("--split-indices-dir requires --split random-window")
+        train_idx, val_idx, test_idx = load_fixed_split(args.split_indices_dir, len(y))
+        fold_name = "random_window"
+    elif args.split == "random-window":
         train_idx, val_idx, test_idx = random_window_split(len(y), split_rng)
         fold_name = "random_window"
     else:
@@ -331,6 +369,9 @@ def main():
         "class_weight": args.class_weight,
         "seed": args.seed,
         "split_seed": split_seed,
+        "split_indices_dir": (
+            str(args.split_indices_dir) if args.split_indices_dir else None
+        ),
         "augmentation_seed": augment_seed if args.augment_npz else None,
         "augmentation_selection": (
             "seeded-permutation-prefix-v1" if args.augment_npz else None
