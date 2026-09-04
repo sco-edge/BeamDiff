@@ -70,7 +70,9 @@ def main():
     p.add_argument('--split-indices-dir',type=Path);p.add_argument('--split-seed',type=int,default=111)
     p.add_argument('--seed',type=int,default=42);p.add_argument('--steps',type=int,default=20);p.add_argument('--epochs',type=int,default=10)
     p.add_argument('--batch-size',type=int,default=64);p.add_argument('--learning-rate',type=float,default=2e-4)
-    p.add_argument('--max-samples',type=int);p.add_argument('--resume',action='store_true');args=p.parse_args()
+    p.add_argument('--max-samples',type=int)
+    p.add_argument('--generated-per-class',type=int,help='generate this many samples for every activity; scarce anchors are reused with new diffusion noise')
+    p.add_argument('--resume',action='store_true');args=p.parse_args()
     ck=args.output_dir/'checkpoint_latest.pt'
     if args.output_dir.exists() and not args.resume:p.error('output exists; use --resume or another output')
     if args.resume and not ck.is_file():p.error(f'missing {ck}')
@@ -106,21 +108,36 @@ def main():
             opt.zero_grad();loss.backward();nn.utils.clip_grad_norm_(model.parameters(),1);opt.step();losses.append(loss.item())
         history.append(float(np.mean(losses)));torch.save(dict(epoch=epoch+1,model=model.state_dict(),optimizer=opt.state_dict(),
             history=history,train_indices=train,mean=mean,std=std),ck);print({'epoch':epoch+1,'loss':history[-1]},flush=True)
-    chunks=args.output_dir/'generation_chunks';chunks.mkdir(exist_ok=True);made=[]
-    for begin in range(0,len(train),args.batch_size):
-        end=min(begin+args.batch_size,len(train));path=chunks/f'{begin:08d}_{end:08d}.npy'
+    if args.generated_per_class:
+        generation_rng=np.random.default_rng(args.seed+1);generation=[]
+        for label in range(20):
+            candidates=train[y[train]==label]
+            if not len(candidates):p.error(f'no training anchor available for class {label}')
+            generation.extend(generation_rng.choice(candidates,args.generated_per_class,
+                replace=len(candidates)<args.generated_per_class))
+        generation=np.asarray(generation,dtype=np.int64)
+    else:generation=train.copy()
+    generation_labels=y[generation];generation_anchors=anchor_features(x[generation,:1])
+    generation_suffix=(f'_per_class_{args.generated_per_class}' if args.generated_per_class else '')
+    chunks=args.output_dir/f'generation_chunks{generation_suffix}';chunks.mkdir(exist_ok=True);made=[]
+    for begin in range(0,len(generation),args.batch_size):
+        end=min(begin+args.batch_size,len(generation));path=chunks/f'{begin:08d}_{end:08d}.npy'
         if path.is_file():out=np.load(path,allow_pickle=False)
         else:
-            label=torch.from_numpy(y[train[begin:end]]).to(device);anchor=torch.from_numpy(anchors[begin:end]).to(device)
+            label=torch.from_numpy(generation_labels[begin:end]).to(device);anchor=torch.from_numpy(generation_anchors[begin:end]).to(device)
             delta=generate(model,label,anchor,args.steps,device).transpose(0,2,3,1)*std+mean
-            out=reconstruct(x[train[begin:end],0],delta);tmp=path.with_suffix('.tmp.npy');np.save(tmp,out);tmp.replace(path)
-            print({'generated':end,'total':len(train)},flush=True)
+            out=reconstruct(x[generation[begin:end],0],delta);tmp=path.with_suffix('.tmp.npy');np.save(tmp,out);tmp.replace(path)
+            print({'generated':end,'total':len(generation)},flush=True)
         made.append(out)
-    made=np.concatenate(made);np.savez_compressed(args.output_dir/'generated_bfa.npz',x=made,y=y[train],
-        **{k:v[train] for k,v in meta.items()},allocation_real_index=train,augmentation_eligible=np.ones(len(train),bool),
+    generated_path=args.output_dir/f'generated_bfa{generation_suffix}.npz'
+    protocol_path=args.output_dir/f'protocol{generation_suffix}.json'
+    made=np.concatenate(made);np.savez_compressed(generated_path,x=made,y=generation_labels,
+        **{k:v[generation] for k,v in meta.items()},allocation_real_index=generation,augmentation_eligible=np.ones(len(generation),bool),
         train_split_seed=np.asarray(args.split_seed),augmentation=np.asarray('anchor-conditioned-bfa-delta-ddpm-v1'))
-    (args.output_dir/'protocol.json').write_text(json.dumps(dict(input=str(args.input),device=str(device),seed=args.seed,
-        split_seed=args.split_seed,steps=args.steps,epochs=args.epochs,train_samples=len(train),delta_mean=mean.tolist(),
+    protocol_path.write_text(json.dumps(dict(input=str(args.input),device=str(device),seed=args.seed,
+        split_seed=args.split_seed,steps=args.steps,epochs=args.epochs,train_samples=len(train),generated_samples=len(generation),
+        generated_per_class=args.generated_per_class,generated_class_counts=np.bincount(generation_labels,minlength=20).tolist(),
+        unique_generation_anchors=len(np.unique(generation)),delta_mean=mean.tolist(),
         delta_std=std.tolist(),loss=history),indent=2));print('Saved',made.shape,flush=True)
 
 if __name__=='__main__':main()
