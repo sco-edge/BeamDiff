@@ -136,12 +136,20 @@ def load_beamsense_teacher(path,device,validation_sample):
     print({"teacher_probability_max_error":maximum_error},flush=True)
     return teacher
 
-def sched(n,device):
-    b=torch.linspace(1e-4,.02,n,device=device);a=1-b;ab=torch.cumprod(a,0);return b,a,ab
+def sched(n,device,kind='linear'):
+    if kind=='linear':
+        b=torch.linspace(1e-4,.02,n,device=device)
+    elif kind=='cosine':
+        s=.008;t=torch.linspace(0,n,n+1,device=device,dtype=torch.float64)
+        cumulative=torch.cos(((t/n+s)/(1+s))*math.pi/2).square()
+        cumulative=cumulative/cumulative[0]
+        b=(1-cumulative[1:]/cumulative[:-1]).clamp(1e-5,.999).float()
+    else:raise ValueError(f'unknown diffusion schedule: {kind}')
+    a=1-b;ab=torch.cumprod(a,0);return b,a,ab
 
 @torch.no_grad()
-def generate(model,y,anchor,n,device):
-    b,a,ab=sched(n,device);x=torch.randn(len(y),4,9,234,device=device)
+def generate(model,y,anchor,n,device,schedule='linear'):
+    b,a,ab=sched(n,device,schedule);x=torch.randn(len(y),4,9,234,device=device)
     for i in reversed(range(n)):
         t=torch.full((len(y),),i,dtype=torch.long,device=device);e=model(x,t,y,anchor)
         x=(x-(1-a[i])/torch.sqrt(1-ab[i])*e)/torch.sqrt(a[i])
@@ -152,6 +160,7 @@ def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('input',type=Path);p.add_argument('output_dir',type=Path)
     p.add_argument('--split-indices-dir',type=Path);p.add_argument('--split-seed',type=int,default=111)
     p.add_argument('--seed',type=int,default=42);p.add_argument('--steps',type=int,default=20);p.add_argument('--epochs',type=int,default=10)
+    p.add_argument('--schedule',choices=('linear','cosine'),default='linear',help='cosine reaches near-pure noise and is recommended for short schedules')
     p.add_argument('--batch-size',type=int,default=64);p.add_argument('--learning-rate',type=float,default=2e-4)
     p.add_argument('--max-samples',type=int)
     p.add_argument('--generated-per-class',type=int,help='generate this many samples for every activity; scarce anchors are reused with new diffusion noise')
@@ -164,6 +173,7 @@ def main():
     p.add_argument('--teacher-model',type=Path,help='frozen BeamSense Keras checkpoint used for activity guidance')
     p.add_argument('--classification-weight',type=float,default=0.0)
     p.add_argument('--x0-weight',type=float,default=0.0,help='weight for clean normalized-delta reconstruction')
+    p.add_argument('--x0-clip',type=float,default=6.0,help='soft bound for predicted x0 used by auxiliary losses')
     p.add_argument('--temporal-weight',type=float,default=0.0,help='weight for per-angle temporal-magnitude matching')
     p.add_argument('--temporal-std-weight',type=float,default=1.0,help='relative weight for channel delta spread within temporal loss')
     p.add_argument('--temporal-tail-weight',type=float,default=0.5,help='relative weight for channel delta p95 within temporal loss')
@@ -174,6 +184,7 @@ def main():
         p.error('--generated-per-class and --candidates-per-anchor cannot be combined')
     if args.resume and args.init_checkpoint:p.error('--resume and --init-checkpoint are mutually exclusive')
     if min(args.classification_weight,args.x0_weight,args.temporal_weight,args.temporal_std_weight,args.temporal_tail_weight)<0:p.error('loss weights must be nonnegative')
+    if args.x0_clip<=0:p.error('--x0-clip must be positive')
     if args.classification_weight and not args.teacher_model:p.error('--classification-weight requires --teacher-model')
     ck=args.output_dir/'checkpoint_latest.pt'
     if args.output_dir.exists() and not args.resume:p.error('output exists; use --resume or another output')
@@ -221,7 +232,7 @@ def main():
         if not (np.allclose(initial['mean'],mean) and np.allclose(initial['std'],std)):
             p.error('initial checkpoint normalization statistics differ')
         print(f'Initialized model from {args.init_checkpoint}',flush=True)
-    opt=torch.optim.AdamW(model.parameters(),lr=args.learning_rate);_,_,ab=sched(args.steps,device)
+    opt=torch.optim.AdamW(model.parameters(),lr=args.learning_rate);_,_,ab=sched(args.steps,device,args.schedule)
     teacher=None
     if args.teacher_model:
         teacher=load_beamsense_teacher(args.teacher_model,device,x[train[:2]].astype(np.float32))
@@ -231,6 +242,7 @@ def main():
     args.output_dir.mkdir(parents=True,exist_ok=True);history=[];component_history=[];start=0
     if args.resume:
         s=torch.load(ck,map_location=device,weights_only=False);model.load_state_dict(s['model']);opt.load_state_dict(s['optimizer'])
+        if s.get('schedule','linear')!=args.schedule:p.error('diffusion schedule changed while resuming')
         history=s['history'];component_history=s.get('component_history',[]);start=s['epoch']
         if not np.array_equal(s['train_indices'],train):p.error('train indices changed')
         mean,std=s['mean'],s['std'];print(f'Resuming after epoch {start}',flush=True)
@@ -242,13 +254,14 @@ def main():
             noisy=torch.sqrt(q)*clean+torch.sqrt(1-q)*noise;predicted_noise=model(noisy,t,label,anchor)
             diffusion_loss=nn.functional.mse_loss(predicted_noise,noise);loss=diffusion_loss
             predicted_x0=(noisy-torch.sqrt(1-q)*predicted_noise)/torch.sqrt(q.clamp_min(1e-8))
-            x0_loss=nn.functional.smooth_l1_loss(predicted_x0,clean)
+            guided_x0=args.x0_clip*torch.tanh(predicted_x0/args.x0_clip)
+            x0_loss=nn.functional.smooth_l1_loss(guided_x0,clean)
             temporal_loss,temporal_mean_loss,temporal_spread_loss,temporal_tail_loss=temporal_fidelity_loss(
-                predicted_x0,clean,args.temporal_std_weight,args.temporal_tail_weight
+                guided_x0,clean,args.temporal_std_weight,args.temporal_tail_weight
             )
             classification_loss=torch.zeros((),device=device)
             if teacher is not None and args.classification_weight:
-                raw_delta=predicted_x0.permute(0,2,3,1)*std_tensor+mean_tensor
+                raw_delta=guided_x0.permute(0,2,3,1)*std_tensor+mean_tensor
                 reconstructed=continuous_reconstruct(raw_anchor,raw_delta)
                 teacher_input=reconstructed/teacher_scale if args.teacher_normalization=='angle-range' else reconstructed
                 classification_loss=nn.functional.cross_entropy(teacher(teacher_input),label)
@@ -257,7 +270,7 @@ def main():
             diff_losses.append(diffusion_loss.item());classification_losses.append(classification_loss.item());x0_losses.append(x0_loss.item());temporal_losses.append(temporal_loss.item());temporal_mean_losses.append(temporal_mean_loss.item());temporal_spread_losses.append(temporal_spread_loss.item());temporal_tail_losses.append(temporal_tail_loss.item())
         history.append(float(np.mean(losses)));components=dict(diffusion=float(np.mean(diff_losses)),classification=float(np.mean(classification_losses)),x0=float(np.mean(x0_losses)),temporal=float(np.mean(temporal_losses)),temporal_mean=float(np.mean(temporal_mean_losses)),temporal_spread=float(np.mean(temporal_spread_losses)),temporal_tail=float(np.mean(temporal_tail_losses)));component_history.append(components)
         torch.save(dict(epoch=epoch+1,model=model.state_dict(),optimizer=opt.state_dict(),history=history,component_history=component_history,
-            train_indices=train,mean=mean,std=std,distill_npz=str(args.distill_npz) if args.distill_npz else None),ck)
+            train_indices=train,mean=mean,std=std,schedule=args.schedule,distill_npz=str(args.distill_npz) if args.distill_npz else None),ck)
         print({'epoch':epoch+1,'loss':history[-1],**components},flush=True)
     if args.generated_per_class:
         generation_rng=np.random.default_rng(args.seed+1);generation=[]
@@ -277,7 +290,7 @@ def main():
         if path.is_file():out=np.load(path,allow_pickle=False)
         else:
             label=torch.from_numpy(generation_labels[begin:end]).to(device);anchor=torch.from_numpy(generation_anchors[begin:end]).to(device)
-            delta=generate(model,label,anchor,args.steps,device).transpose(0,2,3,1)*std+mean
+            delta=generate(model,label,anchor,args.steps,device,args.schedule).transpose(0,2,3,1)*std+mean
             out=reconstruct(x[generation[begin:end],0],delta);tmp=path.with_suffix('.tmp.npy');np.save(tmp,out);tmp.replace(path)
             print({'generated':end,'total':len(generation)},flush=True)
         made.append(out)
@@ -288,11 +301,11 @@ def main():
         candidate_rank=np.tile(np.arange(args.candidates_per_anchor,dtype=np.int16),len(train)) if not args.generated_per_class else np.zeros(len(generation),np.int16),
         train_split_seed=np.asarray(args.split_seed),augmentation=np.asarray('anchor-conditioned-bfa-delta-ddpm-v1'))
     protocol_path.write_text(json.dumps(dict(input=str(args.input),device=str(device),seed=args.seed,
-        split_seed=args.split_seed,steps=args.steps,epochs=args.epochs,train_samples=len(train),
+        split_seed=args.split_seed,steps=args.steps,schedule=args.schedule,epochs=args.epochs,train_samples=len(train),
         optimization_samples=len(ds),distill_samples=distill_samples,
         distill_npz=str(args.distill_npz) if args.distill_npz else None,
         teacher_model=str(args.teacher_model) if args.teacher_model else None,
-        classification_weight=args.classification_weight,x0_weight=args.x0_weight,temporal_weight=args.temporal_weight,
+        classification_weight=args.classification_weight,x0_weight=args.x0_weight,x0_clip=args.x0_clip,temporal_weight=args.temporal_weight,
         temporal_std_weight=args.temporal_std_weight,temporal_tail_weight=args.temporal_tail_weight,
         teacher_normalization=args.teacher_normalization,
         init_checkpoint=str(args.init_checkpoint) if args.init_checkpoint else None,generated_samples=len(generation),
