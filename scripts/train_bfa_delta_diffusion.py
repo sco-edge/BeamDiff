@@ -35,6 +35,23 @@ def continuous_reconstruct(anchor,delta):
         frames.append(current)
     return torch.stack(frames,dim=1)
 
+def temporal_fidelity_loss(predicted,clean,std_weight=1.0,tail_weight=0.5):
+    """Match typical, variable, and high-motion normalized BFA deltas."""
+    predicted_abs=predicted.abs();clean_abs=clean.abs()
+    sample_mean=nn.functional.smooth_l1_loss(
+        predicted_abs.mean((2,3)),clean_abs.mean((2,3))
+    )
+    predicted_channel=predicted_abs.permute(1,0,2,3).reshape(4,-1)
+    clean_channel=clean_abs.permute(1,0,2,3).reshape(4,-1)
+    spread=nn.functional.smooth_l1_loss(
+        predicted_channel.std(1,unbiased=False),clean_channel.std(1,unbiased=False)
+    )
+    tail=nn.functional.smooth_l1_loss(
+        torch.quantile(predicted_channel,.95,dim=1),
+        torch.quantile(clean_channel,.95,dim=1),
+    )
+    return sample_mean+std_weight*spread+tail_weight*tail,sample_mean,spread,tail
+
 def anchor_features(a):
     phi=(a[...,:2].astype(np.float32)+.5)*(2*np.pi/512)
     psi=a[...,2:].astype(np.float32)/127*2-1
@@ -148,13 +165,15 @@ def main():
     p.add_argument('--classification-weight',type=float,default=0.0)
     p.add_argument('--x0-weight',type=float,default=0.0,help='weight for clean normalized-delta reconstruction')
     p.add_argument('--temporal-weight',type=float,default=0.0,help='weight for per-angle temporal-magnitude matching')
+    p.add_argument('--temporal-std-weight',type=float,default=1.0,help='relative weight for channel delta spread within temporal loss')
+    p.add_argument('--temporal-tail-weight',type=float,default=0.5,help='relative weight for channel delta p95 within temporal loss')
     p.add_argument('--teacher-normalization',choices=('none','angle-range'),default='none')
     p.add_argument('--resume',action='store_true');args=p.parse_args()
     if args.candidates_per_anchor < 1:p.error('--candidates-per-anchor must be >= 1')
     if args.generated_per_class and args.candidates_per_anchor != 1:
         p.error('--generated-per-class and --candidates-per-anchor cannot be combined')
     if args.resume and args.init_checkpoint:p.error('--resume and --init-checkpoint are mutually exclusive')
-    if min(args.classification_weight,args.x0_weight,args.temporal_weight)<0:p.error('loss weights must be nonnegative')
+    if min(args.classification_weight,args.x0_weight,args.temporal_weight,args.temporal_std_weight,args.temporal_tail_weight)<0:p.error('loss weights must be nonnegative')
     if args.classification_weight and not args.teacher_model:p.error('--classification-weight requires --teacher-model')
     ck=args.output_dir/'checkpoint_latest.pt'
     if args.output_dir.exists() and not args.resume:p.error('output exists; use --resume or another output')
@@ -216,7 +235,7 @@ def main():
         if not np.array_equal(s['train_indices'],train):p.error('train indices changed')
         mean,std=s['mean'],s['std'];print(f'Resuming after epoch {start}',flush=True)
     for epoch in range(start,args.epochs):
-        losses=[];diff_losses=[];classification_losses=[];x0_losses=[];temporal_losses=[];model.train()
+        losses=[];diff_losses=[];classification_losses=[];x0_losses=[];temporal_losses=[];temporal_mean_losses=[];temporal_spread_losses=[];temporal_tail_losses=[];model.train()
         for clean,label,anchor,raw_anchor in loader:
             clean,label,anchor,raw_anchor=clean.to(device),label.to(device),anchor.to(device),raw_anchor.to(device)
             t=torch.randint(args.steps,(len(clean),),device=device);noise=torch.randn_like(clean);q=ab[t][:,None,None,None]
@@ -224,7 +243,9 @@ def main():
             diffusion_loss=nn.functional.mse_loss(predicted_noise,noise);loss=diffusion_loss
             predicted_x0=(noisy-torch.sqrt(1-q)*predicted_noise)/torch.sqrt(q.clamp_min(1e-8))
             x0_loss=nn.functional.smooth_l1_loss(predicted_x0,clean)
-            temporal_loss=nn.functional.smooth_l1_loss(predicted_x0.abs().mean((2,3)),clean.abs().mean((2,3)))
+            temporal_loss,temporal_mean_loss,temporal_spread_loss,temporal_tail_loss=temporal_fidelity_loss(
+                predicted_x0,clean,args.temporal_std_weight,args.temporal_tail_weight
+            )
             classification_loss=torch.zeros((),device=device)
             if teacher is not None and args.classification_weight:
                 raw_delta=predicted_x0.permute(0,2,3,1)*std_tensor+mean_tensor
@@ -233,8 +254,8 @@ def main():
                 classification_loss=nn.functional.cross_entropy(teacher(teacher_input),label)
             loss=loss+args.x0_weight*x0_loss+args.temporal_weight*temporal_loss+args.classification_weight*classification_loss
             opt.zero_grad();loss.backward();nn.utils.clip_grad_norm_(model.parameters(),1);opt.step();losses.append(loss.item())
-            diff_losses.append(diffusion_loss.item());classification_losses.append(classification_loss.item());x0_losses.append(x0_loss.item());temporal_losses.append(temporal_loss.item())
-        history.append(float(np.mean(losses)));components=dict(diffusion=float(np.mean(diff_losses)),classification=float(np.mean(classification_losses)),x0=float(np.mean(x0_losses)),temporal=float(np.mean(temporal_losses)));component_history.append(components)
+            diff_losses.append(diffusion_loss.item());classification_losses.append(classification_loss.item());x0_losses.append(x0_loss.item());temporal_losses.append(temporal_loss.item());temporal_mean_losses.append(temporal_mean_loss.item());temporal_spread_losses.append(temporal_spread_loss.item());temporal_tail_losses.append(temporal_tail_loss.item())
+        history.append(float(np.mean(losses)));components=dict(diffusion=float(np.mean(diff_losses)),classification=float(np.mean(classification_losses)),x0=float(np.mean(x0_losses)),temporal=float(np.mean(temporal_losses)),temporal_mean=float(np.mean(temporal_mean_losses)),temporal_spread=float(np.mean(temporal_spread_losses)),temporal_tail=float(np.mean(temporal_tail_losses)));component_history.append(components)
         torch.save(dict(epoch=epoch+1,model=model.state_dict(),optimizer=opt.state_dict(),history=history,component_history=component_history,
             train_indices=train,mean=mean,std=std,distill_npz=str(args.distill_npz) if args.distill_npz else None),ck)
         print({'epoch':epoch+1,'loss':history[-1],**components},flush=True)
@@ -272,6 +293,7 @@ def main():
         distill_npz=str(args.distill_npz) if args.distill_npz else None,
         teacher_model=str(args.teacher_model) if args.teacher_model else None,
         classification_weight=args.classification_weight,x0_weight=args.x0_weight,temporal_weight=args.temporal_weight,
+        temporal_std_weight=args.temporal_std_weight,temporal_tail_weight=args.temporal_tail_weight,
         teacher_normalization=args.teacher_normalization,
         init_checkpoint=str(args.init_checkpoint) if args.init_checkpoint else None,generated_samples=len(generation),
         generated_per_class=args.generated_per_class,candidates_per_anchor=args.candidates_per_anchor,
