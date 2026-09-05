@@ -413,3 +413,80 @@ therefore still temporally over-smoothed despite improving downstream sensing on
 average. This limitation and the seed-7777 regression must be retained in the final
 analysis rather than reporting accuracy alone.
 
+## 12. GPU-server data and result paths
+
+The following paths are the GPU-server locations used in the completed experiments.
+They are recorded separately from local macOS paths and temporary `/tmp` scripts.
+
+### 12.1 HAR-1 BFI source and BeamSense input
+
+| Item | GPU-server path |
+|---|---|
+| HAR-1 raw BFI dataset directory | `/home/leehan/RF-Diffusion/dataset/hug_CLI/HAR-1/BFI/` |
+| HAR-1 real BFA MAT windows | `/home/leehan/RF-Diffusion/dataset/hug_CLI/HAR-1/BFI/MAT/M1_w10/` |
+| HAR-1 real BFA NPZ used by BeamSense and Delta Diffusion | `/home/leehan/RF-Diffusion/dataset/hug_CLI/HAR-1/BFI/har1_m1_bfa_w10.npz` |
+| HAR-1 extracted complex V matrices | `/home/leehan/RF-Diffusion/dataset/hug_CLI/HAR-1/BFI/V/M1/` |
+
+The principal real-data NPZ contains BFA windows with shape `(N,10,234,4)` and
+is the common input for the fixed BeamSense baseline and all BFA Delta Diffusion
+experiments.
+
+### 12.2 BeamSense teacher and evaluation code
+
+| Item | GPU-server path |
+|---|---|
+| Frozen BeamSense teacher checkpoint (model seed 111) | `/home/leehan/results/beamsense_fixedsplit111_baseline_modelseed111_final/random_window_best.keras` |
+| BFA Delta Diffusion trainer | `/home/leehan/RF-Diffusion/scripts/train_bfa_delta_diffusion.py` |
+| BeamSense training/evaluation script | `/home/leehan/RF-Diffusion/scripts/train_beamsense_har1.py` |
+
+The teacher checkpoint is used only for the sensing-aware classification objective.
+Downstream evaluation must also include independently initialized BeamSense models
+and must not report only the teacher seed.
+
+### 12.3 Delta Diffusion generated datasets
+
+| Experiment | GPU-server path |
+|---|---|
+| Original one-shot Delta Diffusion directory | `/home/leehan/results/bfa_delta_ddpm_har1_full_seed42/` |
+| Original one-shot generated BFA | `/home/leehan/results/bfa_delta_ddpm_har1_full_seed42/generated_bfa.npz` |
+| Best-of-five selected 1:1 BFA | `/home/leehan/results/bfa_delta_ddpm_har1_full_seed42/generated_bfa_selected_1to1.npz` |
+| K=2 candidate experiment directory | `/home/leehan/results/bfa_delta_ddpm_har1_candidates2_seed42/` |
+| K=2 selected 1:1 BFA with fixed metadata | `/home/leehan/results/bfa_delta_ddpm_har1_candidates2_seed42/generated_bfa_selected_1to1_fixed.npz` |
+| One-shot distillation directory | `/home/leehan/results/bfa_delta_ddpm_har1_distilled_seed42/` |
+| Distilled one-shot generated BFA | `/home/leehan/results/bfa_delta_ddpm_har1_distilled_seed42/generated_bfa.npz` |
+| Sensing-aware v1 directory | `/home/leehan/results/bfa_sensing_aware_full_seed42/` |
+| Sensing-aware v1 generated BFA used in the five-seed 1:1 evaluation | `/home/leehan/results/bfa_sensing_aware_full_seed42/generated_bfa.npz` |
+
+Each experiment directory may additionally contain `checkpoint_latest.pt`,
+`protocol.json`, generation chunks, and evaluation subdirectories. The NPZ files
+listed above are the synthetic datasets passed to the downstream BeamSense training
+script.
+
+### 12.4 HAR-3 paths for the next validation
+
+| Item | GPU-server path |
+|---|---|
+| HAR-3 BFI dataset directory | `/home/leehan/RF-Diffusion/dataset/hug_CLI/HAR-3/BFI/` |
+| HAR-3 real BFA MAT windows | `/home/leehan/RF-Diffusion/dataset/hug_CLI/HAR-3/BFI/MAT/M1_w10/` |
+| HAR-3 real BFA NPZ | `/home/leehan/RF-Diffusion/dataset/hug_CLI/HAR-3/BFI/har3_m1_bfa_w10.npz` |
+| HAR-3 fixed random-window split | `/home/leehan/RF-Diffusion/dataset/hug_CLI/HAR-3/BFI/splits/random_window_seed111/` |
+| HAR-3 train indices | `/home/leehan/RF-Diffusion/dataset/hug_CLI/HAR-3/BFI/splits/random_window_seed111/train_indices.npy` |
+| HAR-3 validation indices | `/home/leehan/RF-Diffusion/dataset/hug_CLI/HAR-3/BFI/splits/random_window_seed111/validation_indices.npy` |
+| HAR-3 test indices | `/home/leehan/RF-Diffusion/dataset/hug_CLI/HAR-3/BFI/splits/random_window_seed111/test_indices.npy` |
+| HAR-3 split protocol | `/home/leehan/RF-Diffusion/dataset/hug_CLI/HAR-3/BFI/splits/random_window_seed111/protocol.json` |
+
+HAR-3 Delta Diffusion training must use only the 29,163 samples referenced by
+`train_indices.npy`. Its 6,249 validation and 6,252 test samples must remain excluded
+from generator training, anchor selection, and synthetic generation.
+
+### 12.5 Path-handling notes
+
+- GPU result directories under `/home/leehan/results/` are not stored in Git because
+  they contain generated datasets and model checkpoints.
+- Git records the code, protocol, paths, and numerical summaries; the large NPZ,
+  MAT, and checkpoint files remain on the GPU server.
+- Files created under `/tmp` are temporary and should not be treated as the canonical
+  implementation. Reusable scripts must be copied into
+  `/home/leehan/RF-Diffusion/scripts/` and committed before final evaluation.
+- Before a new run, verify every recorded path with `test -e <path>` or `ls -lh
+  <path>` because result directories can be renamed during repeated experiments.
