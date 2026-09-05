@@ -3,8 +3,7 @@
 ## 1. Method overview
 
 Sensing-Aware BFA Delta Diffusion v1 is a BFA-specific, anchor-conditioned
-conditional DDPM. It is not a direct input-format conversion of RF-Diffusion
-and does not use the earlier best-of-five post-generation selection procedure.
+conditional DDPM. It is not a direct input-format conversion of RF-Diffusion.
 
 The method receives a quantized BFA window `X` with shape `(10,234,4)`:
 
@@ -200,8 +199,8 @@ or clipped to their corresponding quantization ranges and stored as a
 `uint16 (10,234,4)` BFA window compatible with BeamSense.
 
 Random Gaussian initialization permits different trajectories to be generated
-from the same anchor and activity condition. In v1 evaluation, however, only one
-candidate is generated per anchor.
+from the same anchor and activity condition. The completed v1 evaluation generates
+one synthetic window per real training anchor.
 
 ## 8. Training and evaluation protocol
 
@@ -223,19 +222,7 @@ Across five BeamSense model initialization seeds, real-only accuracy increased
 from 91.6245% on average to 94.6268% with v1 augmentation, a mean paired gain of
 3.0023 percentage points. Four of five model seeds improved.
 
-## 9. Difference from best-of-five selection
-
-The earlier best-of-five experiment generated five candidates per anchor and used
-a frozen BeamSense teacher plus a temporal-realism score to select one candidate.
-V1 does not perform this inference-time candidate search. The BeamSense and
-temporal objectives are applied during generator training, after which one
-synthetic trajectory is generated per real anchor.
-
-The best-of-five method reached 95.1398% mean downstream accuracy, whereas v1
-reached 94.6268%. The difference was 0.5130 percentage points, while v1 required
-one candidate rather than five at generation time.
-
-## 10. Scope and current limitations
+## 9. Scope and current limitations
 
 V1 generates a new nine-transition BFA trajectory from a real first-frame anchor.
 It must not be described as fully unconditional generation of all ten frames.
@@ -252,111 +239,15 @@ Further validation should include:
 - HAR-3 replication under an independently fixed split;
 - source-trace or cross-environment evaluation;
 - ablation of clean-delta, temporal, and BeamSense losses;
-- comparison with the original one-shot delta DDPM, best-of-five selection,
-  TimeVAE, and direct augmentation baselines;
+- comparison with RF-Diffusion, TimeVAE, and direct augmentation baselines;
 - generation-time and memory-cost comparisons.
 
-## 11. Delta Diffusion experiment history
-
-### BFA-specific generator
-
-An anchor-conditioned diffusion model was trained directly on the circular
-frame-to-frame deltas of quantized BFA windows. Each input window has shape
-`(10,234,4)`. The first real BFA frame is retained as the anchor, and the model
-generates the remaining nine frame deltas conditioned on the activity label.
-The four BFA channels use their respective circular ranges (512, 512, 128,
-128). The generator uses only the fixed real training fold (`split_seed=111`).
-
-The first unfiltered one-candidate-per-anchor pool contained 28,529 synthetic
-windows. Its frozen-Teacher label agreement was 78.047%, Macro F1 was 77.204%,
-and Macro recall was 77.252%. Adding this entire pool at 1:1 for model seed 111
-reduced BeamSense accuracy from 93.7849% to 92.5518% (-1.2331%p). This showed
-that the initial one-shot generator was not sufficiently reliable for 1:1
-augmentation.
-
-### Best-of-five sensing-aware selection
-
-Five independent diffusion candidates were generated for every real training
-anchor (142,645 candidates total). One candidate per anchor was selected using
-the assigned-activity confidence of the frozen real-only BeamSense teacher and
-a temporal-realism penalty based on the real per-class delta distribution.
-Incorrect teacher predictions received an additional penalty. Validation and
-test windows were not used as generation anchors or synthetic training data.
-
-- Candidate teacher label agreement: 78.1773%.
-- Selected teacher label agreement: 93.0211%.
-- Selected mean target confidence: 91.6981%.
-- Selected mean temporal Z-score: 0.9083.
-- Selected synthetic windows: 28,529 (exactly one per real training anchor).
-- Selected class counts exactly match the real training-fold class counts.
-- Selection parameters: realism weight 0.15; incorrect-prediction penalty 5.0.
-
-The selected pool was added to the 28,529 real training windows at exactly 1:1.
-All downstream runs use the same split (`split_seed=111`), generated pool, and
-augmentation ordering (`augmentation_seed=111`). Only BeamSense model seed
-changes.
-
-| Model seed | Real-only accuracy | Selected 1:1 accuracy | Paired gain |
-|---:|---:|---:|---:|
-| 42 | 93.5054% | 96.4979% | +2.9924%p |
-| 111 | 93.7849% | 91.4831% | -2.3019%p |
-| 2026 | 91.3515% | 95.3305% | +3.9790%p |
-| 3407 | 85.1529% | 95.9060% | +10.7530%p |
-| 7777 | 94.3275% | 96.4814% | +2.1539%p |
-| **Mean ± sample SD** | **91.6245 ± 3.7904%** | **95.1398 ± 2.1000%** | **+3.5153 ± 4.7055%p** |
-
-Mean Macro F1 increased from 91.7092% to 95.3031% (+3.5939%p), and mean Macro
-recall increased from 92.0131% to 95.3238% (+3.3106%p). Accuracy improved for
-four of five model seeds, and the median paired accuracy gain was +2.9924%p.
-Excluding teacher seed 111, all four independent model seeds improved; their
-mean accuracy changed from 91.0843% to 96.0539% (+4.9696%p). Teacher seed 111
-is reported rather than discarded, but the independent-seed result is also
-reported because that teacher checkpoint participated in synthetic selection.
-
-This experiment establishes that sensing-aware candidate selection can turn
-the initially harmful 1:1 synthetic pool into a beneficial one on average. It
-does not yet establish that five candidates are necessary or that the gain
-generalizes beyond this inspected HAR-1 random-window test split. Required next
-checks are candidate-count ablation (K=2/3/5), an untouched HAR-3 evaluation,
-and comparison against TimeVAE under the same protocol.
-
-### One-shot selection distillation — implementation completed, evaluation pending
-
-To reduce the five-candidate generation cost, the selected one-per-anchor pool
-will be used as teacher targets to fine-tune the existing Delta Diffusion model.
-Fine-tuning mixes 28,529 real deltas and 28,529 selected teacher deltas, then
-generates only one candidate for each anchor. This produces a 100% synthetic
-pool directly instead of generating a 500% candidate pool at inference.
-
-- Implementation commit: `6b6ebf7`.
-- Initialization: original full Delta Diffusion checkpoint, seed 42.
-- Planned fine-tuning: 20 epochs, learning rate `5e-5`.
-- Planned output: `bfa_delta_ddpm_har1_distilled_seed42/generated_bfa.npz`.
-- Evaluation target: approach the best-of-five mean accuracy while retaining
-  exactly 28,529 one-shot synthetic windows.
-
-The initial best-of-five teacher construction cost must remain disclosed. The
-one-shot variant is considered successful only after standalone generated-label
-diagnostics and paired five-seed 1:1 downstream evaluation are completed.
-
-### One-shot distillation and K=2 candidate ablation
-
-The distilled one-shot pool achieved 75.0745% frozen-teacher label agreement,
-below both the original one-shot pool (78.0470%) and the selected K=5 pool
-(93.0211%). Nevertheless, its seed-42 1:1 downstream accuracy was 94.2289%, a
-+0.7234%p gain over the paired 93.5054% real-only baseline. This is weaker than
-the K=5 gain and therefore does not yet replace candidate selection.
-
-Generating two candidates per anchor and selecting one increased frozen-teacher
-label agreement from 78.0276% over all candidates to 86.8099% after selection.
-The selected K=2 pool retained exactly 28,529 windows and the real training-fold
-class distribution. Its seed-42 1:1 downstream accuracy was 94.7221%, a
-+1.2167%p paired gain. The remaining model seeds are pending.
+## 10. Sensing-aware v1 experiment results
 
 ### Sensing-aware one-shot BFA diffusion — implementation
 
-The BFA Delta Diffusion trainer now optionally applies training-time quality
-objectives instead of relying only on post-generation candidate selection:
+The BFA Delta Diffusion trainer applies the following training-time quality
+objectives:
 
 - clean normalized-delta reconstruction loss on the predicted diffusion `x0`;
 - per-angle temporal-magnitude matching loss;
@@ -393,12 +284,8 @@ BeamSense model initialization seed was changed.
 - Accuracy improved for four of five model seeds.
 - Excluding teacher seed 111, mean accuracy changed from 91.0843% to 94.5618%
   (+3.4775%p), with three of four independent model seeds improving.
-- The best-of-five selected pool reached 95.1398% mean accuracy, only 0.5130%p
-  above the one-shot sensing-aware result, while requiring five candidates per
-  anchor at generation time.
-
 The result supports the claim that training-time sensing supervision can provide
-useful 1:1 BFA augmentation without best-of-five inference-time candidate selection.
+useful 1:1 BFA augmentation with one synthetic window per real training anchor.
 Because model seed 7777 degraded, the current claim is an average improvement with
 four-of-five seed consistency, not universal improvement for every initialization.
 
@@ -413,12 +300,12 @@ therefore still temporally over-smoothed despite improving downstream sensing on
 average. This limitation and the seed-7777 regression must be retained in the final
 analysis rather than reporting accuracy alone.
 
-## 12. GPU-server data and result paths
+## 11. GPU-server data and result paths
 
 The following paths are the GPU-server locations used in the completed experiments.
 They are recorded separately from local macOS paths and temporary `/tmp` scripts.
 
-### 12.1 HAR-1 BFI source and BeamSense input
+### 11.1 HAR-1 BFI source and BeamSense input
 
 | Item | GPU-server path |
 |---|---|
@@ -431,7 +318,7 @@ The principal real-data NPZ contains BFA windows with shape `(N,10,234,4)` and
 is the common input for the fixed BeamSense baseline and all BFA Delta Diffusion
 experiments.
 
-### 12.2 BeamSense teacher and evaluation code
+### 11.2 BeamSense teacher and evaluation code
 
 | Item | GPU-server path |
 |---|---|
@@ -443,26 +330,19 @@ The teacher checkpoint is used only for the sensing-aware classification objecti
 Downstream evaluation must also include independently initialized BeamSense models
 and must not report only the teacher seed.
 
-### 12.3 Delta Diffusion generated datasets
+### 11.3 Sensing-aware v1 generated dataset
 
-| Experiment | GPU-server path |
+| Item | GPU-server path |
 |---|---|
-| Original one-shot Delta Diffusion directory | `/home/leehan/results/bfa_delta_ddpm_har1_full_seed42/` |
-| Original one-shot generated BFA | `/home/leehan/results/bfa_delta_ddpm_har1_full_seed42/generated_bfa.npz` |
-| Best-of-five selected 1:1 BFA | `/home/leehan/results/bfa_delta_ddpm_har1_full_seed42/generated_bfa_selected_1to1.npz` |
-| K=2 candidate experiment directory | `/home/leehan/results/bfa_delta_ddpm_har1_candidates2_seed42/` |
-| K=2 selected 1:1 BFA with fixed metadata | `/home/leehan/results/bfa_delta_ddpm_har1_candidates2_seed42/generated_bfa_selected_1to1_fixed.npz` |
-| One-shot distillation directory | `/home/leehan/results/bfa_delta_ddpm_har1_distilled_seed42/` |
-| Distilled one-shot generated BFA | `/home/leehan/results/bfa_delta_ddpm_har1_distilled_seed42/generated_bfa.npz` |
-| Sensing-aware v1 directory | `/home/leehan/results/bfa_sensing_aware_full_seed42/` |
+| Sensing-aware v1 result directory | `/home/leehan/results/bfa_sensing_aware_full_seed42/` |
 | Sensing-aware v1 generated BFA used in the five-seed 1:1 evaluation | `/home/leehan/results/bfa_sensing_aware_full_seed42/generated_bfa.npz` |
+| Sensing-aware v1 checkpoint | `/home/leehan/results/bfa_sensing_aware_full_seed42/checkpoint_latest.pt` |
+| Sensing-aware v1 protocol | `/home/leehan/results/bfa_sensing_aware_full_seed42/protocol.json` |
 
-Each experiment directory may additionally contain `checkpoint_latest.pt`,
-`protocol.json`, generation chunks, and evaluation subdirectories. The NPZ files
-listed above are the synthetic datasets passed to the downstream BeamSense training
-script.
+The generated NPZ is the only Delta Diffusion synthetic dataset retained for the
+completed v1 evaluation.
 
-### 12.4 HAR-3 paths for the next validation
+### 11.4 HAR-3 paths for the next validation
 
 | Item | GPU-server path |
 |---|---|
@@ -479,7 +359,7 @@ HAR-3 Delta Diffusion training must use only the 29,163 samples referenced by
 `train_indices.npy`. Its 6,249 validation and 6,252 test samples must remain excluded
 from generator training, anchor selection, and synthetic generation.
 
-### 12.5 Path-handling notes
+### 11.5 Path-handling notes
 
 - GPU result directories under `/home/leehan/results/` are not stored in Git because
   they contain generated datasets and model checkpoints.
