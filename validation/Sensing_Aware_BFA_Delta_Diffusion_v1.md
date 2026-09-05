@@ -322,7 +322,7 @@ experiments.
 
 | Item | GPU-server path |
 |---|---|
-| Frozen BeamSense teacher checkpoint (model seed 111) | `/home/leehan/results/beamsense_fixedsplit111_baseline_modelseed111_final/random_window_best.keras` |
+| Frozen BeamSense teacher checkpoint copied for v1 | `/home/leehan/new_Diffusion/teacher/beamsense_model_seed111.keras` |
 | BFA Delta Diffusion trainer | `/home/leehan/RF-Diffusion/scripts/train_bfa_delta_diffusion.py` |
 | BeamSense training/evaluation script | `/home/leehan/RF-Diffusion/scripts/train_beamsense_har1.py` |
 
@@ -334,10 +334,15 @@ and must not report only the teacher seed.
 
 | Item | GPU-server path |
 |---|---|
-| Sensing-aware v1 result directory | `/home/leehan/results/bfa_sensing_aware_full_seed42/` |
-| Sensing-aware v1 generated BFA used in the five-seed 1:1 evaluation | `/home/leehan/results/bfa_sensing_aware_full_seed42/generated_bfa.npz` |
-| Sensing-aware v1 checkpoint | `/home/leehan/results/bfa_sensing_aware_full_seed42/checkpoint_latest.pt` |
-| Sensing-aware v1 protocol | `/home/leehan/results/bfa_sensing_aware_full_seed42/protocol.json` |
+| Sensing-aware v1 result directory | `/home/leehan/new_Diffusion/generator/sensing_aware_v1_seed42/` |
+| Sensing-aware v1 generated BFA used in the five-seed 1:1 evaluation | `/home/leehan/new_Diffusion/generator/sensing_aware_v1_seed42/generated_bfa.npz` |
+| Sensing-aware v1 checkpoint | `/home/leehan/new_Diffusion/generator/sensing_aware_v1_seed42/checkpoint_latest.pt` |
+| Sensing-aware v1 protocol | `/home/leehan/new_Diffusion/generator/sensing_aware_v1_seed42/protocol.json` |
+| BeamSense evaluation, model seed 42 | `/home/leehan/new_Diffusion/evaluation/model_seed42/` |
+| BeamSense evaluation, model seed 111 | `/home/leehan/new_Diffusion/evaluation/model_seed111/` |
+| BeamSense evaluation, model seed 2026 | `/home/leehan/new_Diffusion/evaluation/model_seed2026/` |
+| BeamSense evaluation, model seed 3407 | `/home/leehan/new_Diffusion/evaluation/model_seed3407/` |
+| BeamSense evaluation, model seed 7777 | `/home/leehan/new_Diffusion/evaluation/model_seed7777/` |
 
 The generated NPZ is the only Delta Diffusion synthetic dataset retained for the
 completed v1 evaluation.
@@ -361,7 +366,7 @@ from generator training, anchor selection, and synthetic generation.
 
 ### 11.5 Path-handling notes
 
-- GPU result directories under `/home/leehan/results/` are not stored in Git because
+- GPU result directories under `/home/leehan/new_Diffusion/` are not stored in Git because
   they contain generated datasets and model checkpoints.
 - Git records the code, protocol, paths, and numerical summaries; the large NPZ,
   MAT, and checkpoint files remain on the GPU server.
