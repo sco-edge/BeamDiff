@@ -23,6 +23,18 @@ def reconstruct(anchor,delta):
         out[:,t+1]=nxt
     return out
 
+def continuous_reconstruct(anchor,delta):
+    """Differentiably reconstruct BFA frames from a raw first frame and deltas."""
+    frames=[anchor]
+    current=anchor
+    for step in range(delta.shape[1]):
+        value=current+delta[:,step]
+        phi=torch.remainder(value[...,:2],512.0)
+        psi=value[...,2:].clamp(0.0,127.0)
+        current=torch.cat((phi,psi),dim=-1)
+        frames.append(current)
+    return torch.stack(frames,dim=1)
+
 def anchor_features(a):
     phi=(a[...,:2].astype(np.float32)+.5)*(2*np.pi/512)
     psi=a[...,2:].astype(np.float32)/127*2-1
@@ -53,6 +65,60 @@ class Model(nn.Module):
         for b in self.blocks:h=b(h,c)
         return self.out(h)
 
+class BeamSenseTeacher(nn.Module):
+    """PyTorch equivalent of the public BeamSense Keras CNN for input gradients."""
+    def __init__(self):
+        super().__init__()
+        self.conv1=nn.Conv2d(4,128,3,padding=1)
+        self.conv2=nn.Conv2d(128,128,3,padding=1)
+        self.bn1=nn.BatchNorm2d(128,eps=1e-3)
+        self.conv3=nn.Conv2d(128,64,3,padding=1)
+        self.conv4=nn.Conv2d(64,64,3,padding=1)
+        self.bn2=nn.BatchNorm2d(64,eps=1e-3)
+        self.conv5=nn.Conv2d(64,32,3,padding=1)
+        self.conv6=nn.Conv2d(32,32,3,padding=1)
+        self.bn3=nn.BatchNorm2d(32,eps=1e-3)
+        self.fc=nn.Linear(2*234*32,20)
+
+    def forward(self,x):
+        x=x.permute(0,3,1,2)
+        x=nn.functional.relu(self.conv1(x));x=nn.functional.relu(self.conv2(x));x=nn.functional.relu(self.bn1(x))
+        x=nn.functional.relu(self.conv3(x));x=nn.functional.relu(self.conv4(x));x=nn.functional.relu(self.bn2(x))
+        x=nn.functional.max_pool2d(x,(2,1))
+        x=nn.functional.relu(self.conv5(x));x=nn.functional.relu(self.conv6(x));x=nn.functional.relu(self.bn3(x))
+        x=nn.functional.max_pool2d(x,(2,1))
+        # Keras Flatten uses NHWC ordering.
+        return self.fc(x.permute(0,2,3,1).reshape(len(x),-1))
+
+def load_beamsense_teacher(path,device,validation_sample):
+    """Load Keras BeamSense weights into a differentiable PyTorch replica."""
+    import tensorflow as tf
+    try:tf.config.set_visible_devices([],"GPU")
+    except RuntimeError:pass
+    keras_model=tf.keras.models.load_model(path,compile=False)
+    teacher=BeamSenseTeacher()
+    keras_conv=[layer for layer in keras_model.layers if layer.__class__.__name__=="Conv2D"]
+    keras_bn=[layer for layer in keras_model.layers if layer.__class__.__name__=="BatchNormalization"]
+    keras_dense=[layer for layer in keras_model.layers if layer.__class__.__name__=="Dense"]
+    torch_conv=[teacher.conv1,teacher.conv2,teacher.conv3,teacher.conv4,teacher.conv5,teacher.conv6]
+    torch_bn=[teacher.bn1,teacher.bn2,teacher.bn3]
+    if not (len(keras_conv)==6 and len(keras_bn)==3 and len(keras_dense)==1):
+        raise RuntimeError("Unexpected BeamSense Keras architecture")
+    with torch.no_grad():
+        for source,target in zip(keras_conv,torch_conv):
+            kernel,bias=source.get_weights();target.weight.copy_(torch.from_numpy(kernel.transpose(3,2,0,1)));target.bias.copy_(torch.from_numpy(bias))
+        for source,target in zip(keras_bn,torch_bn):
+            gamma,beta,mean,var=source.get_weights();target.weight.copy_(torch.from_numpy(gamma));target.bias.copy_(torch.from_numpy(beta));target.running_mean.copy_(torch.from_numpy(mean));target.running_var.copy_(torch.from_numpy(var))
+        kernel,bias=keras_dense[0].get_weights();teacher.fc.weight.copy_(torch.from_numpy(kernel.T));teacher.fc.bias.copy_(torch.from_numpy(bias))
+    keras_probability=np.asarray(keras_model(validation_sample,training=False))
+    teacher=teacher.to(device).eval().requires_grad_(False)
+    with torch.no_grad():
+        torch_probability=teacher(torch.from_numpy(validation_sample).to(device)).softmax(1).cpu().numpy()
+    maximum_error=float(np.max(np.abs(keras_probability-torch_probability)))
+    if maximum_error>1e-3:raise RuntimeError(f"Keras/PyTorch BeamSense mismatch: {maximum_error}")
+    print({"teacher_probability_max_error":maximum_error},flush=True)
+    return teacher
+
 def sched(n,device):
     b=torch.linspace(1e-4,.02,n,device=device);a=1-b;ab=torch.cumprod(a,0);return b,a,ab
 
@@ -78,11 +144,18 @@ def main():
         help='selected one-per-anchor BFA targets to mix 1:1 with real deltas during fine-tuning')
     p.add_argument('--init-checkpoint',type=Path,
         help='initialize model weights from another run without reusing its optimizer or output directory')
+    p.add_argument('--teacher-model',type=Path,help='frozen BeamSense Keras checkpoint used for activity guidance')
+    p.add_argument('--classification-weight',type=float,default=0.0)
+    p.add_argument('--x0-weight',type=float,default=0.0,help='weight for clean normalized-delta reconstruction')
+    p.add_argument('--temporal-weight',type=float,default=0.0,help='weight for per-angle temporal-magnitude matching')
+    p.add_argument('--teacher-normalization',choices=('none','angle-range'),default='none')
     p.add_argument('--resume',action='store_true');args=p.parse_args()
     if args.candidates_per_anchor < 1:p.error('--candidates-per-anchor must be >= 1')
     if args.generated_per_class and args.candidates_per_anchor != 1:
         p.error('--generated-per-class and --candidates-per-anchor cannot be combined')
     if args.resume and args.init_checkpoint:p.error('--resume and --init-checkpoint are mutually exclusive')
+    if min(args.classification_weight,args.x0_weight,args.temporal_weight)<0:p.error('loss weights must be nonnegative')
+    if args.classification_weight and not args.teacher_model:p.error('--classification-weight requires --teacher-model')
     ck=args.output_dir/'checkpoint_latest.pt'
     if args.output_dir.exists() and not args.resume:p.error('output exists; use --resume or another output')
     if args.resume and not ck.is_file():p.error(f'missing {ck}')
@@ -98,7 +171,7 @@ def main():
             c=train[y[train]==label];z.extend(rng.choice(c,min(per,len(c)),replace=False))
         train=np.asarray(z,dtype=np.int64)
     raw=signed_delta(x[train]);mean=raw.mean((0,1,2));std=np.maximum(raw.std((0,1,2)),1e-3)
-    normalized=(raw-mean)/std;labels=y[train];anchors=anchor_features(x[train,:1])
+    normalized=(raw-mean)/std;labels=y[train];anchors=anchor_features(x[train,:1]);raw_anchors=x[train,0].astype(np.float32)
     distill_samples=0
     if args.distill_npz:
         with np.load(args.distill_npz,allow_pickle=False) as distilled:
@@ -116,9 +189,9 @@ def main():
             if np.any(dy[rows]!=y[train]):p.error('distilled labels do not match real anchors')
             distilled_normalized=(signed_delta(dx[rows])-mean)/std
         normalized=np.concatenate((normalized,distilled_normalized))
-        labels=np.concatenate((labels,y[train]));anchors=np.concatenate((anchors,anchors.copy()))
+        labels=np.concatenate((labels,y[train]));anchors=np.concatenate((anchors,anchors.copy()));raw_anchors=np.concatenate((raw_anchors,raw_anchors.copy()))
         distill_samples=len(rows)
-    ds=TensorDataset(torch.from_numpy(normalized).permute(0,3,1,2),torch.from_numpy(labels),torch.from_numpy(anchors))
+    ds=TensorDataset(torch.from_numpy(normalized).permute(0,3,1,2),torch.from_numpy(labels),torch.from_numpy(anchors),torch.from_numpy(raw_anchors))
     loader=DataLoader(ds,batch_size=args.batch_size,shuffle=True,generator=torch.Generator().manual_seed(args.seed))
     model=Model().to(device)
     if args.init_checkpoint:
@@ -130,22 +203,41 @@ def main():
             p.error('initial checkpoint normalization statistics differ')
         print(f'Initialized model from {args.init_checkpoint}',flush=True)
     opt=torch.optim.AdamW(model.parameters(),lr=args.learning_rate);_,_,ab=sched(args.steps,device)
-    args.output_dir.mkdir(parents=True,exist_ok=True);history=[];start=0
+    teacher=None
+    if args.teacher_model:
+        teacher=load_beamsense_teacher(args.teacher_model,device,x[train[:2]].astype(np.float32))
+    mean_tensor=torch.from_numpy(mean).to(device)[None,None,None,:]
+    std_tensor=torch.from_numpy(std).to(device)[None,None,None,:]
+    teacher_scale=torch.tensor([511.,511.,127.,127.],device=device)[None,None,None,:]
+    args.output_dir.mkdir(parents=True,exist_ok=True);history=[];component_history=[];start=0
     if args.resume:
         s=torch.load(ck,map_location=device,weights_only=False);model.load_state_dict(s['model']);opt.load_state_dict(s['optimizer'])
-        history=s['history'];start=s['epoch']
+        history=s['history'];component_history=s.get('component_history',[]);start=s['epoch']
         if not np.array_equal(s['train_indices'],train):p.error('train indices changed')
         mean,std=s['mean'],s['std'];print(f'Resuming after epoch {start}',flush=True)
     for epoch in range(start,args.epochs):
-        losses=[];model.train()
-        for clean,label,anchor in loader:
-            clean,label,anchor=clean.to(device),label.to(device),anchor.to(device)
+        losses=[];diff_losses=[];classification_losses=[];x0_losses=[];temporal_losses=[];model.train()
+        for clean,label,anchor,raw_anchor in loader:
+            clean,label,anchor,raw_anchor=clean.to(device),label.to(device),anchor.to(device),raw_anchor.to(device)
             t=torch.randint(args.steps,(len(clean),),device=device);noise=torch.randn_like(clean);q=ab[t][:,None,None,None]
-            noisy=torch.sqrt(q)*clean+torch.sqrt(1-q)*noise;loss=nn.functional.mse_loss(model(noisy,t,label,anchor),noise)
+            noisy=torch.sqrt(q)*clean+torch.sqrt(1-q)*noise;predicted_noise=model(noisy,t,label,anchor)
+            diffusion_loss=nn.functional.mse_loss(predicted_noise,noise);loss=diffusion_loss
+            predicted_x0=(noisy-torch.sqrt(1-q)*predicted_noise)/torch.sqrt(q.clamp_min(1e-8))
+            x0_loss=nn.functional.smooth_l1_loss(predicted_x0,clean)
+            temporal_loss=nn.functional.smooth_l1_loss(predicted_x0.abs().mean((2,3)),clean.abs().mean((2,3)))
+            classification_loss=torch.zeros((),device=device)
+            if teacher is not None and args.classification_weight:
+                raw_delta=predicted_x0.permute(0,2,3,1)*std_tensor+mean_tensor
+                reconstructed=continuous_reconstruct(raw_anchor,raw_delta)
+                teacher_input=reconstructed/teacher_scale if args.teacher_normalization=='angle-range' else reconstructed
+                classification_loss=nn.functional.cross_entropy(teacher(teacher_input),label)
+            loss=loss+args.x0_weight*x0_loss+args.temporal_weight*temporal_loss+args.classification_weight*classification_loss
             opt.zero_grad();loss.backward();nn.utils.clip_grad_norm_(model.parameters(),1);opt.step();losses.append(loss.item())
-        history.append(float(np.mean(losses)));torch.save(dict(epoch=epoch+1,model=model.state_dict(),optimizer=opt.state_dict(),
-            history=history,train_indices=train,mean=mean,std=std,distill_npz=str(args.distill_npz) if args.distill_npz else None),ck)
-        print({'epoch':epoch+1,'loss':history[-1]},flush=True)
+            diff_losses.append(diffusion_loss.item());classification_losses.append(classification_loss.item());x0_losses.append(x0_loss.item());temporal_losses.append(temporal_loss.item())
+        history.append(float(np.mean(losses)));components=dict(diffusion=float(np.mean(diff_losses)),classification=float(np.mean(classification_losses)),x0=float(np.mean(x0_losses)),temporal=float(np.mean(temporal_losses)));component_history.append(components)
+        torch.save(dict(epoch=epoch+1,model=model.state_dict(),optimizer=opt.state_dict(),history=history,component_history=component_history,
+            train_indices=train,mean=mean,std=std,distill_npz=str(args.distill_npz) if args.distill_npz else None),ck)
+        print({'epoch':epoch+1,'loss':history[-1],**components},flush=True)
     if args.generated_per_class:
         generation_rng=np.random.default_rng(args.seed+1);generation=[]
         for label in range(20):
@@ -178,10 +270,13 @@ def main():
         split_seed=args.split_seed,steps=args.steps,epochs=args.epochs,train_samples=len(train),
         optimization_samples=len(ds),distill_samples=distill_samples,
         distill_npz=str(args.distill_npz) if args.distill_npz else None,
+        teacher_model=str(args.teacher_model) if args.teacher_model else None,
+        classification_weight=args.classification_weight,x0_weight=args.x0_weight,temporal_weight=args.temporal_weight,
+        teacher_normalization=args.teacher_normalization,
         init_checkpoint=str(args.init_checkpoint) if args.init_checkpoint else None,generated_samples=len(generation),
         generated_per_class=args.generated_per_class,candidates_per_anchor=args.candidates_per_anchor,
         generated_class_counts=np.bincount(generation_labels,minlength=20).tolist(),
         unique_generation_anchors=len(np.unique(generation)),delta_mean=mean.tolist(),
-        delta_std=std.tolist(),loss=history),indent=2));print('Saved',made.shape,flush=True)
+        delta_std=std.tolist(),loss=history,loss_components=component_history),indent=2));print('Saved',made.shape,flush=True)
 
 if __name__=='__main__':main()
