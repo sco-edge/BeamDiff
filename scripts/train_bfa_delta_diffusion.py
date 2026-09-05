@@ -74,10 +74,15 @@ def main():
     p.add_argument('--generated-per-class',type=int,help='generate this many samples for every activity; scarce anchors are reused with new diffusion noise')
     p.add_argument('--candidates-per-anchor',type=int,default=1,
         help='generate K independent diffusion candidates for every training anchor')
+    p.add_argument('--distill-npz',type=Path,
+        help='selected one-per-anchor BFA targets to mix 1:1 with real deltas during fine-tuning')
+    p.add_argument('--init-checkpoint',type=Path,
+        help='initialize model weights from another run without reusing its optimizer or output directory')
     p.add_argument('--resume',action='store_true');args=p.parse_args()
     if args.candidates_per_anchor < 1:p.error('--candidates-per-anchor must be >= 1')
     if args.generated_per_class and args.candidates_per_anchor != 1:
         p.error('--generated-per-class and --candidates-per-anchor cannot be combined')
+    if args.resume and args.init_checkpoint:p.error('--resume and --init-checkpoint are mutually exclusive')
     ck=args.output_dir/'checkpoint_latest.pt'
     if args.output_dir.exists() and not args.resume:p.error('output exists; use --resume or another output')
     if args.resume and not ck.is_file():p.error(f'missing {ck}')
@@ -93,11 +98,38 @@ def main():
             c=train[y[train]==label];z.extend(rng.choice(c,min(per,len(c)),replace=False))
         train=np.asarray(z,dtype=np.int64)
     raw=signed_delta(x[train]);mean=raw.mean((0,1,2));std=np.maximum(raw.std((0,1,2)),1e-3)
-    normalized=(raw-mean)/std
-    anchors=anchor_features(x[train,:1])
-    ds=TensorDataset(torch.from_numpy(normalized).permute(0,3,1,2),torch.from_numpy(y[train]),torch.from_numpy(anchors))
+    normalized=(raw-mean)/std;labels=y[train];anchors=anchor_features(x[train,:1])
+    distill_samples=0
+    if args.distill_npz:
+        with np.load(args.distill_npz,allow_pickle=False) as distilled:
+            if 'allocation_real_index' not in distilled.files:p.error('--distill-npz lacks allocation_real_index')
+            if ('train_split_seed' not in distilled.files
+                    or int(distilled['train_split_seed'])!=args.split_seed):
+                p.error('--distill-npz was not produced from the requested training split')
+            dx=distilled['x'];dy=distilled['y'].astype(np.int64);di=distilled['allocation_real_index'].astype(np.int64)
+            if dx.shape[1:]!=(10,234,4):p.error(f'bad distilled BFA shape {dx.shape}')
+            if not (len(dx)==len(dy)==len(di)):p.error('distilled x/y/allocation lengths differ')
+            if np.any((di<0)|(di>=len(y))):p.error('distilled allocation_real_index is out of range')
+            if len(np.unique(di))!=len(di):p.error('--distill-npz must contain exactly one sample per anchor')
+            lookup=np.full(len(y),-1,dtype=np.int64);lookup[di]=np.arange(len(di));rows=lookup[train]
+            if np.any(rows<0):p.error('--distill-npz does not cover every real training anchor')
+            if np.any(dy[rows]!=y[train]):p.error('distilled labels do not match real anchors')
+            distilled_normalized=(signed_delta(dx[rows])-mean)/std
+        normalized=np.concatenate((normalized,distilled_normalized))
+        labels=np.concatenate((labels,y[train]));anchors=np.concatenate((anchors,anchors.copy()))
+        distill_samples=len(rows)
+    ds=TensorDataset(torch.from_numpy(normalized).permute(0,3,1,2),torch.from_numpy(labels),torch.from_numpy(anchors))
     loader=DataLoader(ds,batch_size=args.batch_size,shuffle=True,generator=torch.Generator().manual_seed(args.seed))
-    model=Model().to(device);opt=torch.optim.AdamW(model.parameters(),lr=args.learning_rate);_,_,ab=sched(args.steps,device)
+    model=Model().to(device)
+    if args.init_checkpoint:
+        if not args.init_checkpoint.is_file():p.error(f'missing {args.init_checkpoint}')
+        initial=torch.load(args.init_checkpoint,map_location=device,weights_only=False)
+        model.load_state_dict(initial['model'])
+        if not np.array_equal(initial['train_indices'],train):p.error('initial checkpoint used different train indices')
+        if not (np.allclose(initial['mean'],mean) and np.allclose(initial['std'],std)):
+            p.error('initial checkpoint normalization statistics differ')
+        print(f'Initialized model from {args.init_checkpoint}',flush=True)
+    opt=torch.optim.AdamW(model.parameters(),lr=args.learning_rate);_,_,ab=sched(args.steps,device)
     args.output_dir.mkdir(parents=True,exist_ok=True);history=[];start=0
     if args.resume:
         s=torch.load(ck,map_location=device,weights_only=False);model.load_state_dict(s['model']);opt.load_state_dict(s['optimizer'])
@@ -112,7 +144,8 @@ def main():
             noisy=torch.sqrt(q)*clean+torch.sqrt(1-q)*noise;loss=nn.functional.mse_loss(model(noisy,t,label,anchor),noise)
             opt.zero_grad();loss.backward();nn.utils.clip_grad_norm_(model.parameters(),1);opt.step();losses.append(loss.item())
         history.append(float(np.mean(losses)));torch.save(dict(epoch=epoch+1,model=model.state_dict(),optimizer=opt.state_dict(),
-            history=history,train_indices=train,mean=mean,std=std),ck);print({'epoch':epoch+1,'loss':history[-1]},flush=True)
+            history=history,train_indices=train,mean=mean,std=std,distill_npz=str(args.distill_npz) if args.distill_npz else None),ck)
+        print({'epoch':epoch+1,'loss':history[-1]},flush=True)
     if args.generated_per_class:
         generation_rng=np.random.default_rng(args.seed+1);generation=[]
         for label in range(20):
@@ -142,7 +175,10 @@ def main():
         candidate_rank=np.tile(np.arange(args.candidates_per_anchor,dtype=np.int16),len(train)) if not args.generated_per_class else np.zeros(len(generation),np.int16),
         train_split_seed=np.asarray(args.split_seed),augmentation=np.asarray('anchor-conditioned-bfa-delta-ddpm-v1'))
     protocol_path.write_text(json.dumps(dict(input=str(args.input),device=str(device),seed=args.seed,
-        split_seed=args.split_seed,steps=args.steps,epochs=args.epochs,train_samples=len(train),generated_samples=len(generation),
+        split_seed=args.split_seed,steps=args.steps,epochs=args.epochs,train_samples=len(train),
+        optimization_samples=len(ds),distill_samples=distill_samples,
+        distill_npz=str(args.distill_npz) if args.distill_npz else None,
+        init_checkpoint=str(args.init_checkpoint) if args.init_checkpoint else None,generated_samples=len(generation),
         generated_per_class=args.generated_per_class,candidates_per_anchor=args.candidates_per_anchor,
         generated_class_counts=np.bincount(generation_labels,minlength=20).tolist(),
         unique_generation_anchors=len(np.unique(generation)),delta_mean=mean.tolist(),
