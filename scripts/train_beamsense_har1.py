@@ -23,7 +23,9 @@ def parse_args():
     parser.add_argument("npz", type=Path)
     parser.add_argument("output", type=Path)
     parser.add_argument(
-        "--split", choices=("participant", "random-window"), default="participant"
+        "--split",
+        choices=("participant", "random-window", "source-trace"),
+        default="participant",
     )
     parser.add_argument("--test-participant", type=int, choices=(1, 2, 3))
     parser.add_argument("--epochs", type=int, default=100)
@@ -200,6 +202,8 @@ def main():
     args = parse_args()
     if args.split == "participant" and args.test_participant is None:
         raise SystemExit("--test-participant is required for --split participant")
+    if args.split == "source-trace" and args.split_indices_dir is None:
+        raise SystemExit("--split-indices-dir is required for --split source-trace")
     if not 0 < args.validation_fraction < 0.5:
         raise SystemExit("--validation-fraction must be between 0 and 0.5")
     if not 0 <= args.augment_ratio <= 1:
@@ -223,10 +227,12 @@ def main():
     split_rng = np.random.default_rng(split_seed)
     rng = np.random.default_rng(args.seed)
     if args.split_indices_dir is not None:
-        if args.split != "random-window":
-            raise SystemExit("--split-indices-dir requires --split random-window")
+        if args.split not in ("random-window", "source-trace"):
+            raise SystemExit(
+                "--split-indices-dir requires --split random-window or source-trace"
+            )
         train_idx, val_idx, test_idx = load_fixed_split(args.split_indices_dir, len(y))
-        fold_name = "random_window"
+        fold_name = "source_trace" if args.split == "source-trace" else "random_window"
     elif args.split == "random-window":
         train_idx, val_idx, test_idx = random_window_split(len(y), split_rng)
         fold_name = "random_window"
@@ -248,9 +254,11 @@ def main():
                 f"Expected augmented x shape [N,10,234,4], got {augment_x.shape}"
             )
         if "augmentation_eligible" in augmented.files:
-            if (args.split != "random-window"
+            if (args.split not in ("random-window", "source-trace")
                     or int(augmented["train_split_seed"]) != split_seed):
-                raise SystemExit("Direct BFA augmentation requires its original random-window split seed")
+                raise SystemExit(
+                    "Direct BFA augmentation requires its original fixed split seed"
+                )
         generated_by_key = {
             key: index for index, key in enumerate(sample_keys(augmented, augment_y))
         }
