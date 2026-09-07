@@ -1,5 +1,7 @@
 # BeamDiff v1
 
+Korean version: [`BeamDiff_v1_ko.md`](BeamDiff_v1_ko.md)
+
 ## 1. Method overview
 
 BeamDiff v1 is a BFA-specific, anchor-conditioned
