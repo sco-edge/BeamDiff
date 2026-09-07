@@ -1,9 +1,13 @@
-# Sensing-Aware BFA Delta Diffusion v1
+# BeamDiff v1
 
 ## 1. Method overview
 
-Sensing-Aware BFA Delta Diffusion v1 is a BFA-specific, anchor-conditioned
+BeamDiff v1 is a BFA-specific, anchor-conditioned
 conditional DDPM. It is not a direct input-format conversion of RF-Diffusion.
+In this document, **BeamDiff** denotes the final model equipped with clean-delta
+reconstruction, temporal-fidelity, and frozen-BeamSense classification losses.
+The loss-free precursor is referred to only as **Base Delta Diffusion** in
+ablation comparisons.
 
 The method receives a quantized BFA window `X` with shape `(10,234,4)`:
 
@@ -242,9 +246,9 @@ Further validation should include:
 - comparison with RF-Diffusion, TimeVAE, and direct augmentation baselines;
 - generation-time and memory-cost comparisons.
 
-## 10. Sensing-aware v1 experiment results
+## 10. BeamDiff v1 experiment results
 
-### Sensing-aware one-shot BFA diffusion — implementation
+### BeamDiff v1 — implementation
 
 The BFA Delta Diffusion trainer applies the following training-time quality
 objectives:
@@ -262,9 +266,9 @@ opt-in, preserving the behavior of all earlier commands. Evaluation must use a
 non-teacher BeamSense seed and the fixed `split_seed=111` test fold to distinguish
 generator improvement from teacher-specific optimization.
 
-### Sensing-aware one-shot BFA diffusion — completed five-seed evaluation
+### BeamDiff v1 — completed five-seed evaluation
 
-The sensing-aware generator produced exactly 28,529 synthetic BFA windows, allowing
+The BeamDiff generator produced exactly 28,529 synthetic BFA windows, allowing
 the real training fold and synthetic pool to be combined at a 1:1 ratio. All runs
 used the same random-window split (`split_seed=111`), augmentation ordering
 (`augmentation_seed=111`), and held-out real validation/test folds. Only the
@@ -289,7 +293,7 @@ useful 1:1 BFA augmentation with one synthetic window per real training anchor.
 Because model seed 7777 degraded, the current claim is an average improvement with
 four-of-five seed consistency, not universal improvement for every initialization.
 
-### Sensing-aware generated-data fidelity
+### BeamDiff generated-data fidelity
 
 The generated temporal-delta distributions remained close in distributional shape
 (mean global JS divergence 0.0353; mean class-conditional JS divergence 0.0451),
@@ -330,14 +334,14 @@ The teacher checkpoint is used only for the sensing-aware classification objecti
 Downstream evaluation must also include independently initialized BeamSense models
 and must not report only the teacher seed.
 
-### 11.3 Sensing-aware v1 generated dataset
+### 11.3 BeamDiff v1 generated dataset
 
 | Item | GPU-server path |
 |---|---|
-| Sensing-aware v1 result directory | `/home/leehan/new_Diffusion/generator/sensing_aware_v1_seed42/` |
-| Sensing-aware v1 generated BFA used in the five-seed 1:1 evaluation | `/home/leehan/new_Diffusion/generator/sensing_aware_v1_seed42/generated_bfa.npz` |
-| Sensing-aware v1 checkpoint | `/home/leehan/new_Diffusion/generator/sensing_aware_v1_seed42/checkpoint_latest.pt` |
-| Sensing-aware v1 protocol | `/home/leehan/new_Diffusion/generator/sensing_aware_v1_seed42/protocol.json` |
+| BeamDiff v1 result directory | `/home/leehan/new_Diffusion/generator/sensing_aware_v1_seed42/` |
+| BeamDiff v1 generated BFA used in the five-seed 1:1 evaluation | `/home/leehan/new_Diffusion/generator/sensing_aware_v1_seed42/generated_bfa.npz` |
+| BeamDiff v1 checkpoint | `/home/leehan/new_Diffusion/generator/sensing_aware_v1_seed42/checkpoint_latest.pt` |
+| BeamDiff v1 protocol | `/home/leehan/new_Diffusion/generator/sensing_aware_v1_seed42/protocol.json` |
 | BeamSense evaluation, model seed 42 | `/home/leehan/new_Diffusion/evaluation/model_seed42/` |
 | BeamSense evaluation, model seed 111 | `/home/leehan/new_Diffusion/evaluation/model_seed111/` |
 | BeamSense evaluation, model seed 2026 | `/home/leehan/new_Diffusion/evaluation/model_seed2026/` |
