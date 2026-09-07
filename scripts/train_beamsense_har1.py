@@ -126,7 +126,7 @@ def random_window_split(size, rng):
     )
 
 
-def load_fixed_split(directory, size):
+def load_fixed_split(directory, size, require_full_coverage=True):
     names = ("train", "validation", "test")
     indexes = []
     for name in names:
@@ -144,7 +144,7 @@ def load_fixed_split(directory, size):
     combined = np.concatenate(indexes)
     if len(np.unique(combined)) != len(combined):
         raise SystemExit("Fixed train/validation/test splits overlap")
-    if len(combined) != size:
+    if require_full_coverage and len(combined) != size:
         raise SystemExit(
             f"Fixed splits cover {len(combined)} of {size} samples; expected full coverage"
         )
@@ -231,7 +231,11 @@ def main():
             raise SystemExit(
                 "--split-indices-dir requires --split random-window or source-trace"
             )
-        train_idx, val_idx, test_idx = load_fixed_split(args.split_indices_dir, len(y))
+        train_idx, val_idx, test_idx = load_fixed_split(
+            args.split_indices_dir,
+            len(y),
+            require_full_coverage=args.split != "source-trace",
+        )
         fold_name = "source_trace" if args.split == "source-trace" else "random_window"
     elif args.split == "random-window":
         train_idx, val_idx, test_idx = random_window_split(len(y), split_rng)
