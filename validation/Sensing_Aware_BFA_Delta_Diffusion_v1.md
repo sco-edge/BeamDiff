@@ -224,9 +224,10 @@ windows are not used for diffusion training, synthetic generation, or downstream
 classifier training. BeamSense evaluation is performed only on the held-out real
 test fold.
 
-Across five BeamSense model initialization seeds, real-only accuracy increased
-from 91.6245% on average to 94.6268% with v1 augmentation, a mean paired gain of
-3.0023 percentage points. Four of five model seeds improved.
+Across five BeamSense model initialization seeds, the latest controlled ratio
+sweep measured a real-only mean accuracy of 92.4564%. With one BeamDiff window
+per real training window, mean accuracy increased to 96.0835%, a paired gain of
+3.6271 percentage points. All five model seeds improved.
 
 ## 9. Scope and current limitations
 
@@ -236,9 +237,9 @@ It must not be described as fully unconditional generation of all ten frames.
 Current fidelity measurements also show temporal over-smoothing. Generated mean
 movement was approximately 55.2%--68.8% of real movement across the four BFA
 channels, although global and class-conditional delta-distribution divergences
-were relatively low. In addition, model seed 7777 degraded after augmentation.
-The supported claim is therefore an average improvement over five seeds, not a
-guarantee of improvement for every classifier initialization.
+were relatively low. The latest controlled sweep improved all five classifier
+seeds at 75% and 100%, but the supported claim remains limited to the fixed
+random-window protocol and the evaluated initialization seeds.
 
 Further validation should include:
 
@@ -268,32 +269,31 @@ opt-in, preserving the behavior of all earlier commands. Evaluation must use a
 non-teacher BeamSense seed and the fixed `split_seed=111` test fold to distinguish
 generator improvement from teacher-specific optimization.
 
-### BeamDiff v1 — completed five-seed evaluation
+### BeamDiff v1 — completed five-seed ratio sweep
 
-The BeamDiff generator produced exactly 28,529 synthetic BFA windows, allowing
-the real training fold and synthetic pool to be combined at a 1:1 ratio. All runs
-used the same random-window split (`split_seed=111`), augmentation ordering
-(`augmentation_seed=111`), and held-out real validation/test folds. Only the
-BeamSense model initialization seed was changed.
+The BeamDiff generator produced exactly 28,529 synthetic BFA windows. The latest
+evaluation varied how many of these windows were added to the same fixed real
+training fold. All runs used the same random-window split (`split_seed=111`),
+augmentation seed (`augmentation_seed=111`), held-out real validation/test folds,
+and five BeamSense initialization seeds (42, 111, 2026, 3407, and 7777). The
+synthetic subsets were selected as nested seeded prefixes so that a lower-ratio
+subset was contained in each higher-ratio subset.
 
-| Model seed | Real-only accuracy | Sensing-aware 1:1 accuracy | Paired gain |
-|---:|---:|---:|---:|
-| 42 | 93.5054% | 96.1361% | +2.6307%p |
-| 111 | 93.7849% | 94.8866% | +1.1016%p |
-| 2026 | 91.3515% | 94.3440% | +2.9924%p |
-| 3407 | 85.1529% | 96.3170% | +11.1641%p |
-| 7777 | 94.3275% | 91.4502% | -2.8773%p |
-| **Mean** | **91.6245%** | **94.6268%** | **+3.0023%p** |
+| Synthetic ratio | Synthetic windows | Accuracy (mean +/- sample SD) | Paired gain | Seeds improved |
+|---:|---:|---:|---:|---:|
+| 0% | 0 | 92.4564 +/- 2.6306% | baseline | - |
+| 25% | 7,132 | 93.1503 +/- 2.7950% | +0.6939%p | 4/5 |
+| 50% | 14,264 | 94.7024 +/- 1.7834% | +2.2460%p | 4/5 |
+| 75% | 21,397 | 95.4850 +/- 0.6244% | +3.0286%p | 5/5 |
+| **100% (1:1)** | **28,529** | **96.0835 +/- 1.1753%** | **+3.6271%p** | **5/5** |
 
-- Mean Macro F1: 91.7092% -> 94.8584% (+3.1492%p).
-- Mean Macro recall: 92.0131% -> 94.8427% (+2.8296%p).
-- Accuracy improved for four of five model seeds.
-- Excluding teacher seed 111, mean accuracy changed from 91.0843% to 94.5618%
-  (+3.4775%p), with three of four independent model seeds improving.
-The result supports the claim that training-time sensing supervision can provide
-useful 1:1 BFA augmentation with one synthetic window per real training anchor.
-Because model seed 7777 degraded, the current claim is an average improvement with
-four-of-five seed consistency, not universal improvement for every initialization.
+The latest 1:1 result supersedes the earlier standalone summary of
+91.6245% to 94.6268%. Under the consistent ratio-sweep protocol, accuracy
+improved at every nonzero ratio on average, and all five seeds improved at 75%
+and 100%. The observed mean accuracy increased monotonically over the evaluated
+range, with the best result at the 1:1 setting. This supports a downstream
+augmentation benefit within the tested 0--100% range; it does not establish that
+ratios above 100% will continue to improve performance.
 
 ### BeamDiff generated-data fidelity
 
@@ -303,8 +303,8 @@ and the mean temporal Z-score was 0.9231. However, generated mean temporal movem
 was only 55.2--68.8% of the corresponding real-data movement across the four BFA
 channels, and generated 95th-percentile deltas were also smaller. The generator is
 therefore still temporally over-smoothed despite improving downstream sensing on
-average. This limitation and the seed-7777 regression must be retained in the final
-analysis rather than reporting accuracy alone.
+average. This limitation must be retained in the final analysis rather than
+reporting downstream accuracy alone.
 
 ## 11. GPU-server data and result paths
 

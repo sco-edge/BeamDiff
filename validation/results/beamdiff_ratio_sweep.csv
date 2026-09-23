@@ -1,0 +1,6 @@
+ratio,ratio_percent,synthetic_samples,accuracy_mean_percent,accuracy_sd_percent,accuracy_gain_mean_pp,accuracy_seeds_improved,seeds
+0.0,0,0,92.4564,2.6306,0.0000,0,5
+0.25,25,7132,93.1503,2.7950,0.6939,4,5
+0.5,50,14264,94.7024,1.7834,2.2460,4,5
+0.75,75,21397,95.4850,0.6244,3.0286,5,5
+1.0,100,28529,96.0835,1.1753,3.6271,5,5
