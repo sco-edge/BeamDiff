@@ -52,3 +52,51 @@ to a 1:1 mixture; it does not justify extrapolation beyond 100% synthetic data.
 Large generated NPZ files and model checkpoints remain on the GPU server. Git
 stores the protocol, numerical summary, and the scripts required to summarize
 and plot the experiment.
+
+## Matched TimeVAE comparison
+
+TimeVAE was evaluated with the same HAR-1 random-window split, BeamSense
+classifier seeds, real-only baseline, and augmentation ratios used for
+BeamDiff. The matched TimeVAE results are stored on the GPU server under
+`/home/leehan/new_Diffusion/evaluation/timevae_ratio_sweep_matched_v2/`.
+
+| Synthetic ratio | TimeVAE accuracy (mean +/- sample SD) | Mean paired gain | Seeds improved |
+|---:|---:|---:|---:|
+| 0% | 92.4564 +/- 2.6306% | baseline | - |
+| **25%** | **94.5248 +/- 0.7537%** | **+2.0684%p** | **5/5** |
+| 50% | 94.0381 +/- 1.6232% | +1.5817%p | 4/5 |
+| 75% | 92.3216 +/- 1.8596% | -0.1348%p | 3/5 |
+| 100% | 93.1733 +/- 2.3606% | +0.7169%p | 2/5 |
+
+TimeVAE obtains its highest mean accuracy at 25% augmentation. Its average
+performance does not increase consistently as more synthetic samples are
+added. At 75%, its mean accuracy is slightly below the matched real-only
+baseline. At 100%, only two of the five paired classifier seeds improve; the
+positive average gain is influenced by the large improvement for seed 7777.
+
+| Synthetic ratio | TimeVAE | BeamDiff | Difference (BeamDiff - TimeVAE) |
+|---:|---:|---:|---:|
+| 0% | 92.4564% | 92.4564% | 0.0000%p |
+| 25% | **94.5248%** | 93.1503% | -1.3745%p |
+| 50% | 94.0381% | **94.7024%** | +0.6643%p |
+| 75% | 92.3216% | **95.4850%** | +3.1634%p |
+| 100% | 93.1733% | **96.0835%** | +2.9102%p |
+
+TimeVAE performs better at the 25% ratio, while BeamDiff produces higher mean
+accuracy from 50% through 100%. The comparison therefore does not support a
+claim that BeamDiff is superior at every ratio. It supports the narrower claim
+that BeamDiff is more effective and consistent when synthetic BFA constitutes
+a larger portion of the augmented training set. BeamDiff improves all five
+paired seeds at both 75% and 100%, whereas TimeVAE does not.
+
+The paper-ready comparison figure is stored in both PNG and PDF formats:
+
+- `validation/results/beamdiff_timevae_ratio_comparison.png`
+- `validation/results/beamdiff_timevae_ratio_comparison.pdf`
+- source values: `validation/results/beamdiff_timevae_ratio_comparison.csv`
+- plotting script: `scripts/plot_beamdiff_timevae_comparison.py`
+
+The plotted points are five-seed means, and the error bars show the sample
+standard deviation. The two methods are horizontally offset, and they use
+different line and marker styles so that the uncertainty bars remain readable
+when printed in grayscale.
