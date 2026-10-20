@@ -1,2 +1,2 @@
-# SparseBFI-Diffusion
-SparseBFI-Diffusion: Conditional RF-Diffusion for Feedback-Sparse Commodity Wi-Fi Sensing
+# BeamDiff
+BeamDiff: Sensing-Aware Diffusion for Wi-Fi Beamforming Feedback Augmentation
