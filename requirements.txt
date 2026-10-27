@@ -1,0 +1,7 @@
+# Direct dependencies; not an exact experimental environment lockfile.
+numpy
+torch
+tensorflow
+scikit-learn
+matplotlib
+pytest
