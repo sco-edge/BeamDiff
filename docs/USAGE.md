@@ -56,6 +56,9 @@ python -m pytest -q
 
 The dependency list is not a frozen experimental environment. GPU training has not been rerun during repository packaging.
 
+See [environment reporting and reproducibility](ENVIRONMENT.md) for dependency,
+hardware, CPU-test, and runtime-reporting guidance.
+
 ## Dataset
 
 Obtain CSI-BFI-HAR separately under its own terms:
