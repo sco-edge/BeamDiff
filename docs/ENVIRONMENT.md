@@ -5,19 +5,31 @@
 Activate the environment used for the experiment, then run:
 
 ```bash
-python scripts/report_environment.py --gpu
-python -m pip freeze
+python scripts/report_environment.py --gpu > environment.json
+python -m pip freeze > requirements-freeze.txt
 ```
 
-The first command reports Python, OS family, architecture, installed dependency
-versions, and optional NVIDIA GPU name, VRAM capacity (MiB), and driver version.
-It does not initialize PyTorch or TensorFlow. Missing packages are reported as
-null; unavailable NVIDIA tools are reported without failing the command.
+`environment.json` contains these fields:
+
+| Field | Description |
+| --- | --- |
+| `python` | Active Python interpreter version. |
+| `os` | Operating-system family reported by Python. |
+| `machine` | Machine architecture reported by Python. |
+| `packages` | Installed versions of the direct scientific, training, plotting, and test packages checked by the script. A missing package is `null`. |
+| `note` | Reminder that the report describes only the current environment. |
+| `gpu` | Present only with `--gpu`. Reports NVIDIA device name, total VRAM in MiB, and driver version, or an `available: false` reason if `nvidia-smi` cannot be queried. |
+
+The reporting script does not initialize PyTorch or TensorFlow. It exits
+successfully when an optional package is missing or NVIDIA tooling is
+unavailable, so inspect the JSON values rather than treating command success as
+proof that the environment is training-ready. Run without `--gpu` when NVIDIA
+metadata is not needed.
 
 These commands describe the active environment, not necessarily the one used
-for previous runs. Review output before sharing it: full `pip freeze` output
-may contain local paths or private package URLs. No environment report is
-automatically uploaded.
+for previous runs. Review both files before sharing them: full `pip freeze`
+output may contain local paths or private package URLs. No environment report
+is automatically uploaded.
 
 ## Version specification status
 
