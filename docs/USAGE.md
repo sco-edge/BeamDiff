@@ -149,3 +149,16 @@ The default schedule is linear with 20 steps. A short linear schedule does not r
 ## Attribution and reuse
 
 The dataset and BeamSense sensing architecture are prior work, not contributions introduced by BeamDiff. See [ATTRIBUTION.md](../ATTRIBUTION.md). This release does not include a repository-wide license grant; GitHub publication alone is not permission to relicense or redistribute third-party material.
+
+## Checking command-line options
+
+  Install the required dependencies before running these commands.
+
+  Run the following commands from the repository root to view the available
+  command-line options:
+
+  ```bash
+  python scripts/har1_bfi_to_bfa.py --help
+  python scripts/train_bfa_delta_diffusion.py --help
+  python scripts/train_beamsense_har1.py --help
+  ```
