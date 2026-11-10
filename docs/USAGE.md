@@ -102,6 +102,36 @@ python scripts/train_bfa_delta_diffusion.py data/har1_bfa.npz runs/beamdiff \
 
 The script trains and then generates one synthetic window per real training anchor by default. Outputs include `checkpoint_latest.pt`, `generated_bfa.npz`, and `protocol.json`. Auxiliary-loss weights default to zero; calling the trainer without these settings does not activate the full sensing-aware objective. Set epochs, diffusion steps, schedule, and other hyperparameters explicitly; see `--help` for options.
 
+#### Resuming or initializing training
+
+Use `--resume` with the same output directory and experiment arguments after an
+interrupted run. `--epochs` is the total target, not the number of additional
+epochs. For example, if `checkpoint_latest.pt` records 6 completed epochs, this
+continues through epoch 10:
+
+```bash
+python scripts/train_bfa_delta_diffusion.py data/har1_bfa.npz runs/beamdiff \
+  --epochs 10 --split-seed 111 --seed 42 \
+  --teacher-model runs/teacher/random_window_best.keras \
+  --teacher-normalization none \
+  --x0-weight "${X0_WEIGHT:?set X0_WEIGHT}" \
+  --temporal-weight "${TEMPORAL_WEIGHT:?set TEMPORAL_WEIGHT}" \
+  --classification-weight "${CLASSIFICATION_WEIGHT:?set CLASSIFICATION_WEIGHT}" \
+  --resume
+```
+
+Resume restores the model, optimizer, completed epoch, loss histories,
+normalization statistics, and training indices from
+`output_dir/checkpoint_latest.pt`. It rejects a missing checkpoint or changes to
+the diffusion schedule, delta mode, anchor conditioning, or training indices.
+Keep the original command or run record and pass the same remaining training
+and guidance options; the checkpoint does not replace command-line arguments.
+
+Use `--init-checkpoint PATH` instead to copy only model weights into a new run
+with a new output directory and a fresh optimizer and history. The source
+checkpoint must use the same training indices and normalization statistics.
+`--resume` and `--init-checkpoint` are mutually exclusive.
+
 ### 3. Augmented sensing training
 
 ```bash
