@@ -72,7 +72,25 @@ Raw captures, measured/generated datasets, pretrained weights, and paper PDFs ar
 python scripts/har1_bfi_to_bfa.py data/HAR-1/BFI/M1 data/har1_bfa.npz
 ```
 
-The NPZ contains `x` shaped `(N,10,234,4)`, zero-based labels `y` in `[0,19]`, and metadata including `source`, `window_start`, and `participant`. Channel order is `phi_11, phi_21, psi_21, psi_31`; phi ranges from 0 to 511 and psi from 0 to 127. Keep input ordering and real-data partitions fixed throughout an experiment.
+The converter writes the following arrays to the compressed NPZ:
+
+| Field | Shape | Meaning |
+| --- | --- | --- |
+| `x` | `(N, window_size, 234, 4)` | Unsigned quantized BFA windows. The default `window_size` is 10. |
+| `y` | `(N,)` | Zero-based activity labels: `A` through `T` map to `0` through `19`. |
+| `participant` | `(N,)` | Participant number parsed from each capture filename. |
+| `monitor` | `(N,)` | Monitor number parsed from each capture filename. |
+| `repetition` | `(N,)` | Repetition number parsed from each capture filename. |
+| `source` | `(N,)` | Source PCAPNG filename for every window. |
+| `window_start` | `(N,)` | Zero-based packet index at which each window begins. |
+| `activity_names` | `(20,)` | Label names `A` through `T`. |
+| `angle_names` | `(4,)` | Channel names in stored order. |
+| `window_size` | scalar | Window length used by the converter. |
+| `stride` | scalar | Packet stride used between windows. |
+
+The four channels are stored in the order `phi_11`, `phi_21`, `psi_21`,
+`psi_31`. Phi values range from 0 to 511 and psi values range from 0 to 127.
+Keep input ordering and real-data partitions fixed throughout an experiment.
 
 ## Usage
 
