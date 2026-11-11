@@ -118,7 +118,25 @@ python scripts/train_bfa_delta_diffusion.py data/har1_bfa.npz runs/beamdiff \
   --classification-weight "${CLASSIFICATION_WEIGHT:?set CLASSIFICATION_WEIGHT}"
 ```
 
-The script trains and then generates one synthetic window per real training anchor by default. Outputs include `checkpoint_latest.pt`, `generated_bfa.npz`, and `protocol.json`. Auxiliary-loss weights default to zero; calling the trainer without these settings does not activate the full sensing-aware objective. Set epochs, diffusion steps, schedule, and other hyperparameters explicitly; see `--help` for options.
+The script trains and then generates one synthetic window per real training anchor
+by default. It writes these artifacts under `output_dir`:
+
+| Artifact | Contents |
+| --- | --- |
+| `checkpoint_latest.pt` | Latest model and optimizer states, completed epoch, loss histories, split indices, normalization statistics, and core generation settings. It is replaced after each epoch. |
+| `generation_chunks/` | One `.npy` file per generated batch. Existing chunks are reused when generation restarts. |
+| `generated_bfa.npz` | Synthetic `x` and `y`, source metadata, the corresponding real anchor index, candidate rank, split seed, and augmentation eligibility/provenance fields. |
+| `protocol.json` | Device, seeds, split and model settings, sample counts, normalization statistics, and loss histories for the run. |
+
+Using `--candidates-per-anchor K` with `K > 1` adds `_candidates_K` to the
+chunk directory, generated NPZ, and protocol names. Using
+`--generated-per-class K` instead adds `_per_class_K`. The two options cannot be
+combined.
+
+Auxiliary-loss weights default to zero; calling the trainer without these
+settings does not activate the full sensing-aware objective. Set epochs,
+diffusion steps, schedule, and other hyperparameters explicitly; see `--help`
+for options.
 
 ### 3. Augmented sensing training
 
