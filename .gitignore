@@ -18,3 +18,5 @@ checkpoints/
 *.pcapng
 results/*.png
 results/*.pdf
+.vscode/
+.idea/
